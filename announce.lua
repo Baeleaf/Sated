@@ -26,7 +26,8 @@ local function announceMode()
 end
 
 local function channel()
-  if IsInGroup(LE_PARTY_CATEGORY_INSTANCE) then return "INSTANCE_CHAT" end
+  -- Always PARTY, never INSTANCE_CHAT — Jess wants the warnings in party
+  -- chat specifically, even inside queued/instance groups.
   if IsInGroup() then return "PARTY" end
   return nil  -- solo: chat has nowhere to go
 end

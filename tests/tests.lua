@@ -275,11 +275,11 @@ add("own cast in a party, out of combat: one PARTY message", function()
     "bad message: " .. SENT_MESSAGES[1].msg)
 end)
 
-add("instance group announces to INSTANCE_CHAT", function()
+add("instance groups still announce to PARTY, never INSTANCE_CHAT", function()
   SetGroup(false, true)
   CastSpell(80353)
-  assert(#SENT_MESSAGES == 1 and SENT_MESSAGES[1].chatType == "INSTANCE_CHAT",
-    "expected INSTANCE_CHAT announce")
+  assert(#SENT_MESSAGES == 1 and SENT_MESSAGES[1].chatType == "PARTY",
+    "expected PARTY announce, got " .. tostring(SENT_MESSAGES[1] and SENT_MESSAGES[1].chatType))
 end)
 
 add("partner's lust announces too by default (mode all)", function()

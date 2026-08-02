@@ -19,8 +19,9 @@ and announces your own lust casts to the party. ~350 lines, no libraries.
   **"Lust has been up for 3 min"**, and so on. A re-lust after a reset
   starts a fresh cycle. All timers survive `/reload` without
   double-firing, including reloads that straddle a reset.
-- **Announces to party chat.** Every beat also goes to party/instance
-  chat automatically: "Lust used — back around HH:MM." at the cast,
+- **Announces to party chat.** Every beat also goes to party chat
+  (always PARTY, never instance chat) automatically:
+  "Lust used — back around HH:MM." at the cast,
   **"Lust is up."** when the debuff drops, and the up-for reminders.
   By default any detected lust announces (`/sated announce all`); if
   several party members run Sated, switch to `/sated announce caster`
