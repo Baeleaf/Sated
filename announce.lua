@@ -1,7 +1,12 @@
--- Sated announce layer. Caster-only: chat fires only for windows WE opened
--- (mine = true), so five party members with the addon still produce exactly
--- one message per event. Events: the initial cast, "Lust is up" when the
--- cooldown ends, and each "has been up for N min" mark after that.
+-- Sated announce layer: mirrors the on-screen beats into party/instance
+-- chat — the cast, countdown marks (3/5 min), "Lust is up." at the
+-- 10-minute cooldown end, and any up-time marks after that.
+--
+-- Modes (/sated announce):
+--   all    (default) announce every detected lust window, whoever cast it
+--   caster announce only lust WE cast — use when several party members run
+--          Sated, so the group gets one message instead of five
+--   off    never chat
 --
 -- Addon chat is locked during active encounters/M+ combat but permitted
 -- before/after — announce immediately when clear, otherwise queue and flush
@@ -14,14 +19,16 @@ local _, Sated = ...
 local queue = nil            -- { record, key } — newest pending event only
 local encounterActive = false
 
-local function announceEnabled()
-  return Sated.db == nil or Sated.db.announce ~= false  -- default: on
+local function announceMode()
+  local m = Sated.db and Sated.db.announceMode
+  if m == "caster" or m == "off" then return m end
+  return "all"
 end
 
 local function channel()
   if IsInGroup(LE_PARTY_CATEGORY_INSTANCE) then return "INSTANCE_CHAT" end
   if IsInGroup() then return "PARTY" end
-  return nil  -- solo: never announce
+  return nil  -- solo: chat has nowhere to go
 end
 
 local function combatLocked()
@@ -30,26 +37,28 @@ end
 
 -- One phrasing function for every announce, computed from the current
 -- clock so queued messages never report stale numbers.
-local function phrase(record)
+local function phrase(record, key)
   local e = Sated.Elapsed() or 0
-  local ready = Sated.SATED_DURATION
-  if e < 3 then
-    return string.format("Lust used — back around %s.", Sated.BackTime(record))
-  elseif e < ready then
+  local dur = Sated.SATED_DURATION
+  if e >= dur then
+    local up = e - dur
+    if up < 3 then return "Lust is up." end
+    return string.format("Lust has been up for %s.", Sated.FmtDur(up))
+  end
+  if key == "cast" then
+    if e < 3 then
+      return string.format("Lust used — back around %s.", Sated.BackTime(record))
+    end
     return string.format("Lust was used %s ago — back around %s.",
       Sated.FmtClock(e), Sated.BackTime(record))
   end
-  local up = e - ready
-  if up < 3 then
-    return "Lust is up."
-  end
-  return string.format("Lust has been up for %s.", Sated.FmtDur(up))
+  return string.format("Lust back in %s.", Sated.FmtDur(dur - e))
 end
 
 local function send(record, key)
   local chan = channel()
   if not chan then return end  -- group dissolved while queued; drop
-  SendChatMessage(phrase(record), chan)
+  SendChatMessage(phrase(record, key), chan)
   record.announcedKeys = record.announcedKeys or {}
   record.announcedKeys[key] = true
   Sated.DebugLog("announce", key .. " → " .. chan)
@@ -57,9 +66,11 @@ end
 
 -- Route an announce event: dedup per (window, key), then send or queue.
 local function request(record, key)
-  if not record or not record.mine then return end
+  if not record then return end
+  local mode = announceMode()
+  if mode == "off" then return end
+  if mode == "caster" and not record.mine then return end
   if record.announcedKeys and record.announcedKeys[key] then return end
-  if not announceEnabled() then return end
   if not IsInGroup() then return end
   if combatLocked() then
     queue = { record = record, key = key }
@@ -77,7 +88,7 @@ local function flush()
   -- Only announce if this is still the live window and event.
   if not Sated.db or record ~= Sated.db.lastLust then return end
   if record.announcedKeys and record.announcedKeys[key] then return end
-  if not announceEnabled() then return end
+  if announceMode() == "off" then return end
   send(record, key)
 end
 
@@ -91,8 +102,8 @@ function Sated.OnLustReady(record)
   request(record, "ready")
 end
 
-function Sated.OnLustUpMark(record, mark)
-  request(record, "up" .. tostring(mark))
+function Sated.OnLustMark(record, mark)
+  request(record, "mark" .. tostring(mark))
 end
 
 function Sated.OnZoneChanged()
@@ -118,17 +129,19 @@ Sated.frame:RegisterEvent("PLAYER_REGEN_ENABLED")
 Sated.frame:RegisterEvent("ENCOUNTER_START")
 Sated.frame:RegisterEvent("ENCOUNTER_END")
 
--- /sated announce on|off
+-- /sated announce all|caster|off  (on = all, for muscle memory)
 function Sated.commands.announce(rest)
   rest = (rest or ""):lower()
-  if rest == "on" then
-    Sated.db.announce = true
+  if rest == "all" or rest == "on" then
+    Sated.db.announceMode = "all"
+  elseif rest == "caster" then
+    Sated.db.announceMode = "caster"
   elseif rest == "off" then
-    Sated.db.announce = false
+    Sated.db.announceMode = "off"
     queue = nil
   else
-    print("|cff33ff99Sated|r: usage: /sated announce on|off")
+    print("|cff33ff99Sated|r: usage: /sated announce all|caster|off")
     return
   end
-  print("|cff33ff99Sated|r: announce " .. rest .. ".")
+  print("|cff33ff99Sated|r: announce " .. Sated.db.announceMode .. ".")
 end

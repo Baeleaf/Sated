@@ -105,12 +105,19 @@ local function fireReady()
   if Sated.OnLustReady then Sated.OnLustReady(Sated.db and Sated.db.lastLust) end
 end
 
--- Fires at each mark AFTER lust came back up ("it's been sitting ready").
+-- Fires at each mark, counted from lust USE. Before the cooldown ends the
+-- alert is a countdown ("Lust back in 7 min"); marks set past the cooldown
+-- read as up-time ("Lust has been up for 3 min").
 local function fireMark(mark)
   Sated.DebugLog("mark", fmtDur(mark))
-  alert(string.format("|cffff4444Lust has been up for %s|r", fmtDur(mark)))
-  if Sated.OnLustUpMark then
-    Sated.OnLustUpMark(Sated.db and Sated.db.lastLust, mark)
+  local dur = Sated.SATED_DURATION
+  if mark < dur then
+    alert(string.format("|cffff4444Lust back in %s|r", fmtDur(dur - mark)))
+  else
+    alert(string.format("|cff33ff99Lust has been up for %s|r", fmtDur(mark - dur)))
+  end
+  if Sated.OnLustMark then
+    Sated.OnLustMark(Sated.db and Sated.db.lastLust, mark)
   end
 end
 
@@ -136,11 +143,12 @@ local function armTimers()
   if ready - e > 0 then
     table.insert(activeTimers, C_Timer.NewTimer(ready - e, fireReady))
   end
-  -- ...then marks counted from that moment: ready + 3:00 / 5:00 / 10:00.
+  -- ...plus marks counted from lust use (default 3/5/10 min). A mark equal
+  -- to the cooldown itself is skipped — the ready alert IS that moment.
   local marks = (Sated.db and Sated.db.marks) or Sated.DEFAULT_MARKS
   for _, mark in ipairs(marks) do
-    local remaining = ready + mark - e
-    if remaining > 0 then
+    local remaining = mark - e
+    if mark ~= ready and remaining > 0 then
       local t = C_Timer.NewTimer(remaining, function() fireMark(mark) end)
       table.insert(activeTimers, t)
     end
@@ -199,6 +207,15 @@ Sated.handlers = handlers  -- later files (announce.lua) extend this table
 function handlers.ADDON_LOADED(name)
   if name ~= ADDON_NAME then return end
   SatedDB = SatedDB or {}
+  if SatedDB.schema ~= 2 then
+    -- v2: marks are now seconds-since-lust-use and announce is a mode
+    -- string. Wipe stale settings (including leftover test marks) so old
+    -- saved values can't fire at wrong times.
+    SatedDB.marks = nil
+    SatedDB.announce = nil
+    SatedDB.announceMode = nil
+    SatedDB.schema = 2
+  end
   Sated.db = SatedDB
   frame:UnregisterEvent("ADDON_LOADED")
 end

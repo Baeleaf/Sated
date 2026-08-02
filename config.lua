@@ -18,6 +18,7 @@ Sated.SATED_DEBUFFS = {   -- self-debuffs that start the timer engine
   [390435] = true,  -- Exhaustion (Fury of the Aspects)
 }
 
-Sated.DEFAULT_MARKS = { 180, 300, 600 }  -- seconds AFTER lust comes back up
+Sated.DEFAULT_MARKS = { 180, 300, 600 }  -- seconds after lust USE; the
+-- 600 mark coincides with the cooldown ending and reads as "Lust is up"
 
 Sated.SATED_DURATION = 600  -- the lust cooldown (Sated debuff length), seconds
