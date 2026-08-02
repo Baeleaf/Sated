@@ -610,6 +610,25 @@ add("reload into a reset state fires ready on PLAYER_ENTERING_WORLD", function()
     "marks not anchored to resync drop")
 end)
 
+add("re-lust while up-for reminders are pending resets the cycle", function()
+  ApplyAura(57724, 600)
+  AdvanceTime(660)         -- natural ready fired at 600 (alert #1); the
+                           -- 3/5/10-min reminders are pending
+  assert(#SCREEN_MESSAGES == 1, "setup wrong")
+  ApplyAura(57724, 600)    -- lust popped again at T+11:00
+  assert(PRINTED[#PRINTED]:find("timers armed"), "re-lust not detected")
+  AdvanceTime(300)         -- old 3-min (T+13:00) and 5-min (T+15:00)
+                           -- reminders would land in here — must not
+  assert(#SCREEN_MESSAGES == 1, "old reminders fired after re-lust: got "
+    .. #SCREEN_MESSAGES)
+  AdvanceTime(350)         -- past the new cycle's ready at 660+600 = T+21:00
+  assert(#SCREEN_MESSAGES == 2 and SCREEN_MESSAGES[2]:find("Lust is up"),
+    "new cycle ready missing")
+  AdvanceTime(180)         -- new cycle's own 3-min reminder
+  assert(#SCREEN_MESSAGES == 3 and SCREEN_MESSAGES[3]:find("has been up for 3 min"),
+    "new cycle reminders missing")
+end)
+
 add("cast-only window (debuff never seen) trusts the clock, not absence", function()
   SatedDB.marks = {}
   CastSpell(2825)          -- window opens; no debuff ever observed
