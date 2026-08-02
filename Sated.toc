@@ -2,7 +2,7 @@
 ## Title: Sated
 ## Notes: Detects Bloodlust-family use, announces to party, and runs "lust back soon" timers.
 ## Author: Jess & Fable
-## Version: 1.0.0
+## Version: 1.1.0
 ## SavedVariables: SatedDB
 ## IconTexture: Interface\Icons\spell_nature_bloodlust
 
