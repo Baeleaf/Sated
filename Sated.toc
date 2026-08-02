@@ -1,0 +1,11 @@
+## Interface: 120100, 120005, 120007
+## Title: Sated
+## Notes: Detects Bloodlust-family use, announces to party, and runs "lust back soon" timers.
+## Author: Jess & Fable
+## Version: 0.1.0
+## SavedVariables: SatedDB
+## IconTexture: Interface\Icons\spell_nature_bloodlust
+
+config.lua
+core.lua
+announce.lua
