@@ -119,3 +119,94 @@ add("elapsed survives /reload (server-timestamp persistence)", function()
   assert(PRINTED[#PRINTED]:find("1:30"), "reload elapsed wrong: " .. PRINTED[#PRINTED])
   assert(PRINTED[#PRINTED]:find("yours"), "mine flag not reported")
 end)
+
+-- Sprint 2 ------------------------------------------------------------
+
+add("custom marks fire alerts with sound at 10/20/30s", function()
+  RunSlash("/sated marks 10 20 30")
+  assert(SatedDB.marks and SatedDB.marks[1] == 10, "marks not persisted")
+  ApplyAura(57724, 600)
+  AdvanceTime(35)
+  assert(#SCREEN_MESSAGES == 3, "expected 3 alerts, got " .. #SCREEN_MESSAGES)
+  assert(SCREEN_MESSAGES[1]:find("0:10"), "first alert wrong: " .. SCREEN_MESSAGES[1])
+  assert(SCREEN_MESSAGES[3]:find("0:30"), "third alert wrong: " .. SCREEN_MESSAGES[3])
+  assert(#PLAYED_SOUNDS == 3, "expected 3 sounds, got " .. #PLAYED_SOUNDS)
+end)
+
+add("default marks fire at 3:00 / 5:00 / 10:00", function()
+  ApplyAura(57724, 600)
+  AdvanceTime(601)
+  assert(#SCREEN_MESSAGES == 3, "expected 3 alerts, got " .. #SCREEN_MESSAGES)
+  assert(SCREEN_MESSAGES[1]:find("3:00") and SCREEN_MESSAGES[2]:find("5:00")
+    and SCREEN_MESSAGES[3]:find("10:00"), "default mark labels wrong")
+end)
+
+add("/reload at 15s: later marks fire once, passed mark does not", function()
+  SatedDB.marks = { 10, 20, 30 }
+  SatedDB.lastLust = { at = GetTime() - 15, server = GetServerTime() - 15, mine = false }
+  FireEvent("PLAYER_ENTERING_WORLD")  -- what WoW fires after a /reload
+  AdvanceTime(30)
+  assert(#SCREEN_MESSAGES == 2,
+    "expected exactly the 20s and 30s alerts, got " .. #SCREEN_MESSAGES)
+  assert(SCREEN_MESSAGES[1]:find("0:20") and SCREEN_MESSAGES[2]:find("0:30"),
+    "wrong marks fired after reload")
+end)
+
+add("repeat PLAYER_ENTERING_WORLD (zone-in) never double-fires marks", function()
+  RunSlash("/sated marks 10 20")
+  ApplyAura(57724, 600)
+  AdvanceTime(5)
+  FireEvent("PLAYER_ENTERING_WORLD")
+  FireEvent("PLAYER_ENTERING_WORLD")
+  AdvanceTime(30)
+  assert(#SCREEN_MESSAGES == 2, "double-fired: got " .. #SCREEN_MESSAGES .. " alerts")
+end)
+
+add("alerts still fire while in combat (display path unrestricted)", function()
+  RunSlash("/sated marks 10")
+  ApplyAura(57724, 600)
+  SetCombat(true)
+  AdvanceTime(15)
+  assert(#SCREEN_MESSAGES == 1, "alert did not fire in combat")
+  SetCombat(false)
+end)
+
+add("/sated sound off silences alerts; on restores; persisted", function()
+  RunSlash("/sated sound off")
+  assert(SatedDB.sound == false, "sound=off not persisted")
+  RunSlash("/sated marks 10")
+  ApplyAura(57724, 600)
+  AdvanceTime(15)
+  assert(#SCREEN_MESSAGES == 1 and #PLAYED_SOUNDS == 0,
+    "alert should show without sound")
+  RunSlash("/sated sound on")
+  assert(SatedDB.sound == true, "sound=on not persisted")
+end)
+
+add("/sated reset cancels pending marks and clears the window", function()
+  RunSlash("/sated marks 10 20")
+  ApplyAura(57724, 600)
+  RunSlash("/sated reset")
+  assert(SatedDB.lastLust == nil, "window not cleared")
+  AdvanceTime(60)
+  assert(#SCREEN_MESSAGES == 0, "cancelled marks still fired")
+  RunSlash("/sated")
+  assert(PRINTED[#PRINTED]:find("no lust recorded"), "status not reset")
+end)
+
+add("changing marks mid-window re-arms against the same window", function()
+  RunSlash("/sated marks 100")
+  ApplyAura(57724, 600)
+  AdvanceTime(10)
+  RunSlash("/sated marks 20 30")   -- 20s mark is 10s away now
+  AdvanceTime(25)                  -- now at t=35 into the window
+  assert(#SCREEN_MESSAGES == 2, "re-armed marks wrong: " .. #SCREEN_MESSAGES)
+  AdvanceTime(100)
+  assert(#SCREEN_MESSAGES == 2, "old 100s mark should be cancelled")
+end)
+
+add("bad marks input rejected, marks unchanged", function()
+  RunSlash("/sated marks 10 nope 30")
+  assert(SatedDB.marks == nil, "invalid input must not persist")
+  assert(PRINTED[#PRINTED]:find("usage"), "no usage message")
+end)

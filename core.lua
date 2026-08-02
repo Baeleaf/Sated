@@ -1,4 +1,4 @@
--- Sated core: secret-value guard, detection engine, slash commands.
+-- Sated core: secret-value guard, detection engine, timer marks, slash commands.
 local ADDON_NAME, Sated = ...
 
 -- ---------------------------------------------------------------------------
@@ -45,6 +45,57 @@ local function fmtClock(seconds)
 end
 Sated.FmtClock = fmtClock
 
+-- ---------------------------------------------------------------------------
+-- Alerts: a dedicated message frame (RaidNotice-style) + sound. Pure local
+-- display — no chat, no comms — so it is unrestricted in combat.
+-- ---------------------------------------------------------------------------
+local msgFrame = CreateFrame("MessageFrame", "SatedMessageFrame", UIParent)
+msgFrame:SetPoint("TOP", UIParent, "TOP", 0, -220)
+msgFrame:SetSize(600, 60)
+msgFrame:SetFrameStrata("HIGH")
+msgFrame:SetFontObject(GameFontNormalHuge)
+msgFrame:SetInsertMode("TOP")
+msgFrame:SetTimeVisible(4)
+msgFrame:SetFadeDuration(1)
+Sated.msgFrame = msgFrame
+
+local ALERT_SOUND = (SOUNDKIT and SOUNDKIT.RAID_WARNING) or 8959
+
+local function fireMark(mark)
+  msgFrame:AddMessage(string.format("|cffff4444Lust used %s ago|r", fmtClock(mark)))
+  if Sated.db == nil or Sated.db.sound ~= false then  -- default: on
+    PlaySound(ALERT_SOUND)
+  end
+end
+
+-- ---------------------------------------------------------------------------
+-- Timer engine. Marks are seconds-after-lust; on window open (or /reload
+-- mid-window via PLAYER_ENTERING_WORLD) we schedule only the marks still in
+-- the future, computed from the persisted server timestamp — already-passed
+-- marks never double-fire.
+-- ---------------------------------------------------------------------------
+local activeTimers = {}
+
+local function cancelTimers()
+  for _, t in ipairs(activeTimers) do t:Cancel() end
+  wipe(activeTimers)
+end
+
+local function armTimers()
+  cancelTimers()
+  local e = elapsed()
+  if e == nil then return end
+  local marks = (Sated.db and Sated.db.marks) or Sated.DEFAULT_MARKS
+  for _, mark in ipairs(marks) do
+    local remaining = mark - e
+    if remaining > 0 then
+      local t = C_Timer.NewTimer(remaining, function() fireMark(mark) end)
+      table.insert(activeTimers, t)
+    end
+  end
+end
+Sated.ArmTimers = armTimers
+
 local function openWindow(mine)
   if windowActive() then
     -- Re-detection inside an active window: only upgrade the mine flag
@@ -54,6 +105,7 @@ local function openWindow(mine)
   end
   Sated.db.lastLust = { at = GetTime(), server = GetServerTime(), mine = mine or false }
   print("|cff33ff99Sated|r: Lust detected — timers armed.")
+  armTimers()
   if Sated.OnWindowOpened then Sated.OnWindowOpened(Sated.db.lastLust) end
 end
 
@@ -94,6 +146,12 @@ function handlers.ADDON_LOADED(name)
   frame:UnregisterEvent("ADDON_LOADED")
 end
 
+function handlers.PLAYER_ENTERING_WORLD()
+  -- Fires after login/reload/zone-in. Re-arm whatever marks are still ahead
+  -- of us; armTimers cancels first, so this is idempotent.
+  armTimers()
+end
+
 function handlers.UNIT_AURA(unit, updateInfo)
   if unit ~= "player" then return end
   if windowActive() then return end
@@ -118,6 +176,7 @@ function handlers.UNIT_SPELLCAST_SUCCEEDED(unit, castGUID, spellId)
 end
 
 frame:RegisterEvent("ADDON_LOADED")
+frame:RegisterEvent("PLAYER_ENTERING_WORLD")
 frame:RegisterUnitEvent("UNIT_AURA", "player")
 frame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player", "pet")
 frame:SetScript("OnEvent", function(_, event, ...)
@@ -139,6 +198,47 @@ function commands.status()
     local who = (Sated.db.lastLust.mine and " (yours)") or ""
     print(string.format("|cff33ff99Sated|r: last lust %s ago%s.", fmtClock(e), who))
   end
+end
+
+function commands.marks(rest)
+  local newMarks = {}
+  for word in rest:gmatch("%S+") do
+    local n = tonumber(word)
+    if not n or n <= 0 then
+      print("|cff33ff99Sated|r: usage: /sated marks <seconds> <seconds> ...")
+      return
+    end
+    table.insert(newMarks, math.floor(n))
+  end
+  if #newMarks == 0 then
+    print("|cff33ff99Sated|r: usage: /sated marks <seconds> <seconds> ...")
+    return
+  end
+  table.sort(newMarks)
+  Sated.db.marks = newMarks
+  local parts = {}
+  for _, m in ipairs(newMarks) do parts[#parts + 1] = fmtClock(m) end
+  print("|cff33ff99Sated|r: marks set to " .. table.concat(parts, ", ") .. ".")
+  if windowActive() then armTimers() end
+end
+
+function commands.sound(rest)
+  rest = (rest or ""):lower()
+  if rest == "on" then
+    Sated.db.sound = true
+  elseif rest == "off" then
+    Sated.db.sound = false
+  else
+    print("|cff33ff99Sated|r: usage: /sated sound on|off")
+    return
+  end
+  print("|cff33ff99Sated|r: sound " .. rest .. ".")
+end
+
+function commands.reset()
+  cancelTimers()
+  Sated.db.lastLust = nil
+  print("|cff33ff99Sated|r: reset — lust window cleared.")
 end
 
 SLASH_SATED1 = "/sated"
