@@ -99,8 +99,12 @@ Sated.ArmTimers = armTimers
 local function openWindow(mine)
   if windowActive() then
     -- Re-detection inside an active window: only upgrade the mine flag
-    -- (cast event and debuff event both fire for our own lust).
-    if mine then Sated.db.lastLust.mine = true end
+    -- (cast event and debuff event both fire for our own lust, in either
+    -- order — the announce layer needs to hear about the upgrade).
+    if mine and not Sated.db.lastLust.mine then
+      Sated.db.lastLust.mine = true
+      if Sated.OnWindowOpened then Sated.OnWindowOpened(Sated.db.lastLust) end
+    end
     return
   end
   Sated.db.lastLust = { at = GetTime(), server = GetServerTime(), mine = mine or false }
@@ -150,6 +154,7 @@ function handlers.PLAYER_ENTERING_WORLD()
   -- Fires after login/reload/zone-in. Re-arm whatever marks are still ahead
   -- of us; armTimers cancels first, so this is idempotent.
   armTimers()
+  if Sated.OnZoneChanged then Sated.OnZoneChanged() end
 end
 
 function handlers.UNIT_AURA(unit, updateInfo)

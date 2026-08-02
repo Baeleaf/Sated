@@ -210,3 +210,113 @@ add("bad marks input rejected, marks unchanged", function()
   assert(SatedDB.marks == nil, "invalid input must not persist")
   assert(PRINTED[#PRINTED]:find("usage"), "no usage message")
 end)
+
+-- Sprint 3 ------------------------------------------------------------
+
+add("own cast in a party, out of combat: one PARTY message", function()
+  SetGroup(true, false)
+  CastSpell(2825)
+  assert(#SENT_MESSAGES == 1, "expected 1 message, got " .. #SENT_MESSAGES)
+  assert(SENT_MESSAGES[1].chatType == "PARTY", "wrong channel: " .. tostring(SENT_MESSAGES[1].chatType))
+  assert(SENT_MESSAGES[1].msg:find("^Lust used — back around %d+:%d+%.$"),
+    "bad message: " .. SENT_MESSAGES[1].msg)
+end)
+
+add("instance group announces to INSTANCE_CHAT", function()
+  SetGroup(false, true)
+  CastSpell(80353)
+  assert(#SENT_MESSAGES == 1 and SENT_MESSAGES[1].chatType == "INSTANCE_CHAT",
+    "expected INSTANCE_CHAT announce")
+end)
+
+add("cast mid-combat: queued, flushed on regen with elapsed phrasing", function()
+  SetGroup(true, false)
+  SetCombat(true)
+  CastSpell(2825)
+  assert(#SENT_MESSAGES == 0, "announced during combat")
+  AdvanceTime(130)
+  SetCombat(false)  -- fires PLAYER_REGEN_ENABLED
+  assert(#SENT_MESSAGES == 1, "queue did not flush on regen")
+  assert(SENT_MESSAGES[1].msg:find("was used 2:10 ago"),
+    "elapsed phrasing wrong: " .. SENT_MESSAGES[1].msg)
+end)
+
+add("cast during encounter: queued, flushed on ENCOUNTER_END", function()
+  SetGroup(true, false)
+  SetEncounter(true)
+  CastSpell(2825)
+  assert(#SENT_MESSAGES == 0, "announced during encounter")
+  AdvanceTime(30)
+  SetEncounter(false)
+  assert(#SENT_MESSAGES == 1, "queue did not flush on encounter end")
+end)
+
+add("regen mid-encounter keeps the queue until encounter ends", function()
+  SetGroup(true, false)
+  SetEncounter(true)
+  SetCombat(true)
+  CastSpell(2825)
+  SetCombat(false)          -- regen fires but boss fight still running
+  assert(#SENT_MESSAGES == 0, "flushed while encounter still active")
+  SetEncounter(false)
+  assert(#SENT_MESSAGES == 1, "never flushed after encounter end")
+end)
+
+add("partner's lust: silent in chat, local timers still run", function()
+  SetGroup(true, false)
+  RunSlash("/sated marks 10")
+  ApplyAura(57724, 600)      -- debuff only; we cast nothing
+  AdvanceTime(15)
+  assert(#SENT_MESSAGES == 0, "announced someone else's lust")
+  assert(#SCREEN_MESSAGES == 1, "local timers did not run")
+end)
+
+add("never announces twice per window (repeat cast + repeat regen)", function()
+  SetGroup(true, false)
+  CastSpell(2825)
+  CastSpell(2825)
+  SetCombat(true)
+  SetCombat(false)
+  assert(#SENT_MESSAGES == 1, "double announce: " .. #SENT_MESSAGES)
+end)
+
+add("debuff lands before cast event: still exactly one announce", function()
+  SetGroup(true, false)
+  ApplyAura(57724, 600)      -- our own debuff arrives first
+  CastSpell(2825)            -- then the cast event upgrades mine
+  assert(#SENT_MESSAGES == 1, "expected 1 announce, got " .. #SENT_MESSAGES)
+end)
+
+add("never announces solo", function()
+  SetGroup(false, false)
+  CastSpell(2825)
+  assert(#SENT_MESSAGES == 0, "announced while solo")
+end)
+
+add("/sated announce off silences; on restores; persisted", function()
+  SetGroup(true, false)
+  RunSlash("/sated announce off")
+  assert(SatedDB.announce == false, "announce=off not persisted")
+  CastSpell(2825)
+  assert(#SENT_MESSAGES == 0, "announced while disabled")
+  RunSlash("/sated announce on")
+  assert(SatedDB.announce == true, "announce=on not persisted")
+end)
+
+add("queued announce is dropped on zone change (run over)", function()
+  SetGroup(true, false)
+  SetCombat(true)
+  CastSpell(2825)
+  FireEvent("PLAYER_ENTERING_WORLD")  -- left the instance before regen
+  SetCombat(false)
+  assert(#SENT_MESSAGES == 0, "stale queue was announced")
+end)
+
+add("queued announce is dropped by /sated reset", function()
+  SetGroup(true, false)
+  SetCombat(true)
+  CastSpell(2825)
+  RunSlash("/sated reset")
+  SetCombat(false)
+  assert(#SENT_MESSAGES == 0, "reset window still announced")
+end)
