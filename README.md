@@ -10,28 +10,28 @@ and announces your own lust casts to the party. ~350 lines, no libraries.
   get a Sated-family debuff — Sated watches your own debuff bar
   (`UNIT_AURA` on "player"), so it works even if nobody else in the
   group has the addon, and never touches restricted party combat data.
-- **Tracks the cooldown.** The Sated debuff is the 10-minute cooldown.
-  Warnings land at configurable marks after lust use (default 3, 5, and
-  10 minutes): **"Lust back in 7 min"**, **"Lust back in 5 min"**, and
-  **"Lust is up!"** with sound at the 10-minute moment. Marks set past
-  the cooldown read as "Lust has been up for X". All timers survive
-  `/reload` without double-firing.
+- **Tracks when lust can be pressed again.** The Sated debuff is the
+  10-minute blocker; the moment it falls off you get **"Lust is up!"**
+  with sound. Then reminders of how long lust has been sitting
+  available at configurable marks after that moment (default 3, 5, and
+  10 minutes): **"Lust has been up for 3 min"**, and so on. All timers
+  survive `/reload` without double-firing.
 - **Announces to party chat.** Every beat also goes to party/instance
   chat automatically: "Lust used — back around HH:MM." at the cast,
-  the countdown marks, and **"Lust is up."** By default any detected
-  lust announces (`/sated announce all`); if several party members run
-  Sated, switch to `/sated announce caster` so only the caster's addon
-  speaks. During combat or an encounter, messages queue (newest beat
-  only) and are sent after regen/encounter end, re-phrased from the
-  live clock. Chat needs a group — WoW has no channel to announce to
-  while solo.
+  **"Lust is up."** when the debuff drops, and the up-for reminders.
+  By default any detected lust announces (`/sated announce all`); if
+  several party members run Sated, switch to `/sated announce caster`
+  so only the caster's addon speaks. During combat or an encounter,
+  messages queue (newest beat only) and are sent after regen/encounter
+  end, re-phrased from the live clock. Chat needs a group — WoW has no
+  channel to announce to while solo.
 
 ## Commands
 
 | Command | Effect |
 | --- | --- |
 | `/sated` | Time since last lust / how long lust has been up |
-| `/sated marks 180 300 600` | Set warning marks (seconds after lust use) |
+| `/sated marks 180 300 600` | Set reminder marks (seconds after the debuff falls off) |
 | `/sated sound on\|off` | Alert sound (default on) |
 | `/sated announce all\|caster\|off` | Party announce (default all) |
 | `/sated reset` | Clear the current lust window |
