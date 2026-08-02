@@ -320,3 +320,54 @@ add("queued announce is dropped by /sated reset", function()
   SetCombat(false)
   assert(#SENT_MESSAGES == 0, "reset window still announced")
 end)
+
+-- Sprint 4 ------------------------------------------------------------
+
+add("/sated debug shows a sane event trail for a full run", function()
+  SetGroup(true, false)
+  RunSlash("/sated marks 10")
+  SetCombat(true)
+  CastSpell(2825)
+  ApplyAura(57724, 600)
+  AdvanceTime(15)
+  SetCombat(false)
+  RunSlash("/sated debug")
+  local out = table.concat(PRINTED, "\n")
+  assert(out:find("detect — mine"), "no detect entry")
+  assert(out:find("mark — 0:10"), "no mark entry")
+  assert(out:find("queue —"), "no queue entry")
+  assert(out:find("announce — PARTY"), "no announce entry")
+end)
+
+add("secret encounters are logged to the debug buffer", function()
+  ApplyAura(57724, 600, { secret = true })
+  CastSpell(2825, { secret = true })
+  RunSlash("/sated debug")
+  local out = table.concat(PRINTED, "\n")
+  assert(out:find("secret — aura.spellId"), "aura secret not logged")
+  assert(out:find("secret — cast.spellId"), "cast secret not logged")
+end)
+
+add("debug ring buffer caps at 20 entries", function()
+  for i = 1, 30 do SATED_SHARED.DebugLog("test", tostring(i)) end
+  RunSlash("/sated debug")
+  local count = 0
+  for _, line in ipairs(PRINTED) do
+    if line:find("test — ") then count = count + 1 end
+  end
+  assert(count == 20, "expected 20 entries, got " .. count)
+  assert(table.concat(PRINTED, "\n"):find("test — 30"), "newest entry missing")
+  assert(not table.concat(PRINTED, "\n"):find("test — 5\n"), "oldest entries not evicted")
+end)
+
+add("secret isFullUpdate flag routes to the safe rescan path", function()
+  ApplyAura(57724, 600, { silentAdd = true })
+  FireEvent("UNIT_AURA", "player",
+    { addedAuras = {}, isFullUpdate = MakeSecret() })
+  assert(SatedDB.lastLust, "secret full-update flag broke detection")
+end)
+
+add("empty debug buffer prints a friendly line", function()
+  RunSlash("/sated debug")
+  assert(PRINTED[#PRINTED]:find("debug buffer empty"), "no empty message")
+end)

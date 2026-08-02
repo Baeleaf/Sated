@@ -10,9 +10,25 @@ local ADDON_NAME, Sated = ...
 -- ---------------------------------------------------------------------------
 local issecret = issecretvalue or function() return false end
 
-function Sated.Guard(v)
+-- Debug ring buffer: last 20 events (detections, secrets encountered,
+-- marks, queue actions) for patch-day diagnosis via /sated debug.
+-- In-memory only; never stores secret contents, only where one was met.
+local debugLog = {}
+local DEBUG_MAX = 20
+
+function Sated.DebugLog(kind, detail)
+  local entry = string.format("[%s] %s%s", date("%H:%M:%S"), kind,
+    detail and (" — " .. detail) or "")
+  table.insert(debugLog, entry)
+  if #debugLog > DEBUG_MAX then table.remove(debugLog, 1) end
+end
+
+function Sated.Guard(v, ctx)
   if v == nil then return nil end
-  if issecret(v) then return nil end
+  if issecret(v) then
+    Sated.DebugLog("secret", ctx or "unlabeled read")
+    return nil
+  end
   return v
 end
 local Guard = Sated.Guard
@@ -62,6 +78,7 @@ Sated.msgFrame = msgFrame
 local ALERT_SOUND = (SOUNDKIT and SOUNDKIT.RAID_WARNING) or 8959
 
 local function fireMark(mark)
+  Sated.DebugLog("mark", fmtClock(mark))
   msgFrame:AddMessage(string.format("|cffff4444Lust used %s ago|r", fmtClock(mark)))
   if Sated.db == nil or Sated.db.sound ~= false then  -- default: on
     PlaySound(ALERT_SOUND)
@@ -108,6 +125,7 @@ local function openWindow(mine)
     return
   end
   Sated.db.lastLust = { at = GetTime(), server = GetServerTime(), mine = mine or false }
+  Sated.DebugLog("detect", mine and "mine" or "party")
   print("|cff33ff99Sated|r: Lust detected — timers armed.")
   armTimers()
   if Sated.OnWindowOpened then Sated.OnWindowOpened(Sated.db.lastLust) end
@@ -121,7 +139,7 @@ end
 -- ---------------------------------------------------------------------------
 local function auraMatches(aura)
   if not aura then return false end
-  local spellId = Guard(aura.spellId)
+  local spellId = Guard(aura.spellId, "aura.spellId")
   return spellId ~= nil and Sated.SATED_DEBUFFS[spellId] == true
 end
 
@@ -160,13 +178,24 @@ end
 function handlers.UNIT_AURA(unit, updateInfo)
   if unit ~= "player" then return end
   if windowActive() then return end
+  -- Decide between the incremental payload and a whole-bar rescan. A secret
+  -- isFullUpdate flag counts as a full update: the rescan is the safe path,
+  -- and issecretvalue is the only operation permitted on a secret.
+  local useIncremental = false
+  if updateInfo and updateInfo.addedAuras then
+    local rawFull = updateInfo.isFullUpdate
+    if issecret(rawFull) then
+      Sated.DebugLog("secret", "updateInfo.isFullUpdate")
+    elseif not rawFull then
+      useIncremental = true
+    end
+  end
   local found
-  if updateInfo and updateInfo.addedAuras and not updateInfo.isFullUpdate then
+  if useIncremental then
     for _, aura in ipairs(updateInfo.addedAuras) do
       if auraMatches(aura) then found = true; break end
     end
   else
-    -- Full update (or a client without the incremental payload): rescan.
     found = scanAllAuras()
   end
   if found then openWindow(false) end
@@ -174,7 +203,7 @@ end
 
 function handlers.UNIT_SPELLCAST_SUCCEEDED(unit, castGUID, spellId)
   if unit ~= "player" and unit ~= "pet" then return end
-  local id = Guard(spellId)
+  local id = Guard(spellId, "cast.spellId")
   if id ~= nil and Sated.LUST_CASTS[id] then
     openWindow(true)
   end
@@ -243,7 +272,17 @@ end
 function commands.reset()
   cancelTimers()
   Sated.db.lastLust = nil
+  Sated.DebugLog("reset")
   print("|cff33ff99Sated|r: reset — lust window cleared.")
+end
+
+function commands.debug()
+  if #debugLog == 0 then
+    print("|cff33ff99Sated|r: debug buffer empty.")
+    return
+  end
+  print("|cff33ff99Sated|r debug (last " .. #debugLog .. " events):")
+  for _, line in ipairs(debugLog) do print("  " .. line) end
 end
 
 SLASH_SATED1 = "/sated"

@@ -40,6 +40,7 @@ local function send(record)
   end
   SendChatMessage(msg, chan)
   record.announced = true
+  Sated.DebugLog("announce", chan)
 end
 
 local function flush()
@@ -64,12 +65,14 @@ function Sated.OnWindowOpened(record)
   if not IsInGroup() then return end
   if combatLocked() then
     queue = record
+    Sated.DebugLog("queue", "announce held for combat/encounter end")
   else
     send(record)
   end
 end
 
 function Sated.OnZoneChanged()
+  if queue then Sated.DebugLog("drop", "queued announce stale on zone change") end
   queue = nil  -- run is over or world changed; a queued announce is stale
 end
 
