@@ -1,5 +1,10 @@
 -- Sated behavioral tests. Each entry runs in a fresh stub environment
 -- (see tests/run_tests.py). SATED_SHARED is the addon-private table.
+--
+-- Timeline model (Sprint 5 semantics): lust used at T. Cooldown = the
+-- 10-minute Sated debuff. T+10:00 → "Lust is up". Marks (default
+-- 3/5/10 min) fire AFTER that: T+13:00, T+15:00, T+20:00 as
+-- "Lust has been up for N min".
 TESTS = {}
 local function add(name, fn) table.insert(TESTS, { name = name, fn = fn }) end
 local S = SATED_SHARED
@@ -105,11 +110,13 @@ add("non-lust casts open nothing", function()
   assert(SatedDB.lastLust == nil)
 end)
 
-add("/sated shows a running mm:ss clock", function()
+add("/sated shows a running clock with back-up countdown", function()
   ApplyAura(57724, 600)
   AdvanceTime(90)
   RunSlash("/sated")
   assert(PRINTED[#PRINTED]:find("1:30"), "expected 1:30, got: " .. PRINTED[#PRINTED])
+  assert(PRINTED[#PRINTED]:find("back up in 8:30"),
+    "expected back-up countdown, got: " .. PRINTED[#PRINTED])
 end)
 
 add("elapsed survives /reload (server-timestamp persistence)", function()
@@ -120,76 +127,99 @@ add("elapsed survives /reload (server-timestamp persistence)", function()
   assert(PRINTED[#PRINTED]:find("yours"), "mine flag not reported")
 end)
 
--- Sprint 2 ------------------------------------------------------------
+-- Sprint 2 (re-timed for Sprint 5 semantics) --------------------------
 
-add("custom marks fire alerts with sound at 10/20/30s", function()
+add("'Lust is up' alert fires exactly when the cooldown ends", function()
+  ApplyAura(57724, 600)
+  AdvanceTime(599)
+  assert(#SCREEN_MESSAGES == 0, "alert fired early")
+  AdvanceTime(2)
+  assert(#SCREEN_MESSAGES == 1, "no ready alert at 10:00")
+  assert(SCREEN_MESSAGES[1]:find("Lust is up"), "wrong text: " .. SCREEN_MESSAGES[1])
+  assert(#PLAYED_SOUNDS == 1, "no sound on ready alert")
+end)
+
+add("custom marks fire after ready: up-for 10/20/30s", function()
   RunSlash("/sated marks 10 20 30")
   assert(SatedDB.marks and SatedDB.marks[1] == 10, "marks not persisted")
   ApplyAura(57724, 600)
-  AdvanceTime(35)
-  assert(#SCREEN_MESSAGES == 3, "expected 3 alerts, got " .. #SCREEN_MESSAGES)
-  assert(SCREEN_MESSAGES[1]:find("0:10"), "first alert wrong: " .. SCREEN_MESSAGES[1])
-  assert(SCREEN_MESSAGES[3]:find("0:30"), "third alert wrong: " .. SCREEN_MESSAGES[3])
-  assert(#PLAYED_SOUNDS == 3, "expected 3 sounds, got " .. #PLAYED_SOUNDS)
+  AdvanceTime(635)  -- past ready (600) and all three marks (610/620/630)
+  assert(#SCREEN_MESSAGES == 4, "expected ready + 3 marks, got " .. #SCREEN_MESSAGES)
+  assert(SCREEN_MESSAGES[2]:find("has been up for 0:10"),
+    "first mark wrong: " .. SCREEN_MESSAGES[2])
+  assert(SCREEN_MESSAGES[4]:find("has been up for 0:30"),
+    "third mark wrong: " .. SCREEN_MESSAGES[4])
+  assert(#PLAYED_SOUNDS == 4, "expected 4 sounds, got " .. #PLAYED_SOUNDS)
 end)
 
-add("default marks fire at 3:00 / 5:00 / 10:00", function()
+add("default marks fire at up-for 3/5/10 min", function()
   ApplyAura(57724, 600)
-  AdvanceTime(601)
-  assert(#SCREEN_MESSAGES == 3, "expected 3 alerts, got " .. #SCREEN_MESSAGES)
-  assert(SCREEN_MESSAGES[1]:find("3:00") and SCREEN_MESSAGES[2]:find("5:00")
-    and SCREEN_MESSAGES[3]:find("10:00"), "default mark labels wrong")
+  AdvanceTime(1201)  -- through ready + 180/300/600 up-marks
+  assert(#SCREEN_MESSAGES == 4, "expected 4 alerts, got " .. #SCREEN_MESSAGES)
+  assert(SCREEN_MESSAGES[2]:find("3 min") and SCREEN_MESSAGES[3]:find("5 min")
+    and SCREEN_MESSAGES[4]:find("10 min"), "default mark labels wrong")
 end)
 
-add("/reload at 15s: later marks fire once, passed mark does not", function()
+add("/reload mid-cooldown: ready + later marks fire once", function()
   SatedDB.marks = { 10, 20, 30 }
-  SatedDB.lastLust = { at = GetTime() - 15, server = GetServerTime() - 15, mine = false }
+  SatedDB.lastLust = { at = GetTime() - 590, server = GetServerTime() - 590, mine = false }
   FireEvent("PLAYER_ENTERING_WORLD")  -- what WoW fires after a /reload
-  AdvanceTime(30)
+  AdvanceTime(25)  -- ready lands at +10, first mark at +20
   assert(#SCREEN_MESSAGES == 2,
-    "expected exactly the 20s and 30s alerts, got " .. #SCREEN_MESSAGES)
+    "expected ready + 10s mark, got " .. #SCREEN_MESSAGES)
+  assert(SCREEN_MESSAGES[1]:find("Lust is up") and SCREEN_MESSAGES[2]:find("0:10"),
+    "wrong alerts after reload")
+end)
+
+add("/reload after ready: passed ready/marks do not refire", function()
+  SatedDB.marks = { 10, 20, 30 }
+  SatedDB.lastLust = { at = GetTime() - 615, server = GetServerTime() - 615, mine = false }
+  FireEvent("PLAYER_ENTERING_WORLD")
+  AdvanceTime(20)  -- 20s/30s marks are still ahead; ready and 10s are past
+  assert(#SCREEN_MESSAGES == 2,
+    "expected exactly the 20s and 30s marks, got " .. #SCREEN_MESSAGES)
   assert(SCREEN_MESSAGES[1]:find("0:20") and SCREEN_MESSAGES[2]:find("0:30"),
     "wrong marks fired after reload")
 end)
 
-add("repeat PLAYER_ENTERING_WORLD (zone-in) never double-fires marks", function()
+add("repeat PLAYER_ENTERING_WORLD (zone-in) never double-fires", function()
   RunSlash("/sated marks 10 20")
   ApplyAura(57724, 600)
   AdvanceTime(5)
   FireEvent("PLAYER_ENTERING_WORLD")
   FireEvent("PLAYER_ENTERING_WORLD")
-  AdvanceTime(30)
-  assert(#SCREEN_MESSAGES == 2, "double-fired: got " .. #SCREEN_MESSAGES .. " alerts")
+  AdvanceTime(700)
+  assert(#SCREEN_MESSAGES == 3,  -- ready + both marks, exactly once each
+    "double-fired: got " .. #SCREEN_MESSAGES .. " alerts")
 end)
 
 add("alerts still fire while in combat (display path unrestricted)", function()
   RunSlash("/sated marks 10")
   ApplyAura(57724, 600)
   SetCombat(true)
-  AdvanceTime(15)
-  assert(#SCREEN_MESSAGES == 1, "alert did not fire in combat")
+  AdvanceTime(615)
+  assert(#SCREEN_MESSAGES == 2, "ready + mark did not fire in combat")
   SetCombat(false)
 end)
 
 add("/sated sound off silences alerts; on restores; persisted", function()
   RunSlash("/sated sound off")
   assert(SatedDB.sound == false, "sound=off not persisted")
-  RunSlash("/sated marks 10")
   ApplyAura(57724, 600)
-  AdvanceTime(15)
+  AdvanceTime(605)
   assert(#SCREEN_MESSAGES == 1 and #PLAYED_SOUNDS == 0,
     "alert should show without sound")
   RunSlash("/sated sound on")
   assert(SatedDB.sound == true, "sound=on not persisted")
 end)
 
-add("/sated reset cancels pending marks and clears the window", function()
+add("/sated reset cancels pending alerts and clears the window", function()
   RunSlash("/sated marks 10 20")
   ApplyAura(57724, 600)
   RunSlash("/sated reset")
   assert(SatedDB.lastLust == nil, "window not cleared")
-  AdvanceTime(60)
-  assert(#SCREEN_MESSAGES == 0, "cancelled marks still fired")
+  AdvanceTime(700)
+  assert(#SCREEN_MESSAGES == 0, "cancelled alerts still fired")
   RunSlash("/sated")
   assert(PRINTED[#PRINTED]:find("no lust recorded"), "status not reset")
 end)
@@ -198,11 +228,11 @@ add("changing marks mid-window re-arms against the same window", function()
   RunSlash("/sated marks 100")
   ApplyAura(57724, 600)
   AdvanceTime(10)
-  RunSlash("/sated marks 20 30")   -- 20s mark is 10s away now
-  AdvanceTime(25)                  -- now at t=35 into the window
-  assert(#SCREEN_MESSAGES == 2, "re-armed marks wrong: " .. #SCREEN_MESSAGES)
+  RunSlash("/sated marks 20 30")
+  AdvanceTime(700)  -- through ready (600) + 20s/30s up-marks
+  assert(#SCREEN_MESSAGES == 3, "re-armed alerts wrong: " .. #SCREEN_MESSAGES)
   AdvanceTime(100)
-  assert(#SCREEN_MESSAGES == 2, "old 100s mark should be cancelled")
+  assert(#SCREEN_MESSAGES == 3, "old 100s mark should be cancelled")
 end)
 
 add("bad marks input rejected, marks unchanged", function()
@@ -262,16 +292,16 @@ add("regen mid-encounter keeps the queue until encounter ends", function()
   assert(#SENT_MESSAGES == 1, "never flushed after encounter end")
 end)
 
-add("partner's lust: silent in chat, local timers still run", function()
+add("partner's lust: silent in chat, local alerts still run", function()
   SetGroup(true, false)
   RunSlash("/sated marks 10")
   ApplyAura(57724, 600)      -- debuff only; we cast nothing
-  AdvanceTime(15)
+  AdvanceTime(615)
   assert(#SENT_MESSAGES == 0, "announced someone else's lust")
-  assert(#SCREEN_MESSAGES == 1, "local timers did not run")
+  assert(#SCREEN_MESSAGES == 2, "local ready + mark alerts did not run")
 end)
 
-add("never announces twice per window (repeat cast + repeat regen)", function()
+add("cast event never announces twice (repeat cast + repeat regen)", function()
   SetGroup(true, false)
   CastSpell(2825)
   CastSpell(2825)
@@ -280,7 +310,7 @@ add("never announces twice per window (repeat cast + repeat regen)", function()
   assert(#SENT_MESSAGES == 1, "double announce: " .. #SENT_MESSAGES)
 end)
 
-add("debuff lands before cast event: still exactly one announce", function()
+add("debuff lands before cast event: still exactly one cast announce", function()
   SetGroup(true, false)
   ApplyAura(57724, 600)      -- our own debuff arrives first
   CastSpell(2825)            -- then the cast event upgrades mine
@@ -290,6 +320,7 @@ end)
 add("never announces solo", function()
   SetGroup(false, false)
   CastSpell(2825)
+  AdvanceTime(1201)          -- ready + all marks pass too
   assert(#SENT_MESSAGES == 0, "announced while solo")
 end)
 
@@ -329,14 +360,15 @@ add("/sated debug shows a sane event trail for a full run", function()
   SetCombat(true)
   CastSpell(2825)
   ApplyAura(57724, 600)
-  AdvanceTime(15)
+  AdvanceTime(615)           -- ready + mark fire during combat, chat queued
   SetCombat(false)
   RunSlash("/sated debug")
   local out = table.concat(PRINTED, "\n")
   assert(out:find("detect — mine"), "no detect entry")
+  assert(out:find("ready"), "no ready entry")
   assert(out:find("mark — 0:10"), "no mark entry")
   assert(out:find("queue —"), "no queue entry")
-  assert(out:find("announce — PARTY"), "no announce entry")
+  assert(out:find("announce — "), "no announce entry")
 end)
 
 add("secret encounters are logged to the debug buffer", function()
@@ -370,4 +402,74 @@ end)
 add("empty debug buffer prints a friendly line", function()
   RunSlash("/sated debug")
   assert(PRINTED[#PRINTED]:find("debug buffer empty"), "no empty message")
+end)
+
+-- Sprint 5: off-cooldown announce semantics ---------------------------
+
+add("'Lust is up.' goes to party chat when the cooldown ends", function()
+  SetGroup(true, false)
+  CastSpell(2825)
+  assert(#SENT_MESSAGES == 1, "no cast announce")
+  AdvanceTime(601)
+  assert(#SENT_MESSAGES == 2, "no ready announce")
+  assert(SENT_MESSAGES[2].msg == "Lust is up.",
+    "bad ready message: " .. SENT_MESSAGES[2].msg)
+end)
+
+add("up-for marks announce 3/5/10 min to party chat", function()
+  SetGroup(true, false)
+  CastSpell(2825)
+  AdvanceTime(601)   -- cast + ready announces (SENT 1,2)
+  AdvanceTime(179)   -- T+13:00
+  assert(SENT_MESSAGES[3] and SENT_MESSAGES[3].msg == "Lust has been up for 3 min.",
+    "bad 3-min message: " .. tostring(SENT_MESSAGES[3] and SENT_MESSAGES[3].msg))
+  AdvanceTime(120)   -- T+15:00
+  assert(SENT_MESSAGES[4] and SENT_MESSAGES[4].msg == "Lust has been up for 5 min.",
+    "bad 5-min message")
+  AdvanceTime(300)   -- T+20:00
+  assert(SENT_MESSAGES[5] and SENT_MESSAGES[5].msg == "Lust has been up for 10 min.",
+    "bad 10-min message")
+  assert(#SENT_MESSAGES == 5, "extra announces: " .. #SENT_MESSAGES)
+end)
+
+add("ready during combat: queued, flushed with live up-for phrasing", function()
+  SetGroup(true, false)
+  CastSpell(2825)            -- SENT 1 (out of combat)
+  SetCombat(true)
+  AdvanceTime(600)           -- ready fires mid-combat → queued
+  assert(#SENT_MESSAGES == 1, "ready announced during combat")
+  AdvanceTime(130)
+  SetCombat(false)
+  assert(#SENT_MESSAGES == 2, "queue did not flush")
+  assert(SENT_MESSAGES[2].msg == "Lust has been up for 2:10.",
+    "queued flush not re-phrased from live clock: " .. SENT_MESSAGES[2].msg)
+end)
+
+add("combat queue keeps only the newest event (no message burst)", function()
+  SetGroup(true, false)
+  CastSpell(2825)            -- SENT 1
+  SetCombat(true)
+  AdvanceTime(790)           -- ready (600) and 3-min mark (780) both queue
+  SetCombat(false)
+  assert(#SENT_MESSAGES == 2,
+    "expected one flushed message, got " .. (#SENT_MESSAGES - 1))
+  assert(SENT_MESSAGES[2].msg == "Lust has been up for 3:10.",
+    "wrong flushed message: " .. SENT_MESSAGES[2].msg)
+end)
+
+add("partner's lust stays silent in chat at ready and marks", function()
+  SetGroup(true, false)
+  ApplyAura(57724, 600)
+  AdvanceTime(1201)
+  assert(#SENT_MESSAGES == 0, "announced a window we did not cast")
+  assert(#SCREEN_MESSAGES == 4, "local alerts should still all fire")
+end)
+
+add("/sated status flips to up-for phrasing after ready", function()
+  ApplyAura(57724, 600)
+  AdvanceTime(690)
+  RunSlash("/sated")
+  assert(PRINTED[#PRINTED]:find("lust is UP"), "no up status: " .. PRINTED[#PRINTED])
+  assert(PRINTED[#PRINTED]:find("has been up for 1:30"),
+    "up-for time wrong: " .. PRINTED[#PRINTED])
 end)

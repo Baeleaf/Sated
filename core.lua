@@ -61,6 +61,20 @@ local function fmtClock(seconds)
 end
 Sated.FmtClock = fmtClock
 
+-- "3 min" for whole minutes, "3:12" otherwise — reads better in chat.
+local function fmtDur(seconds)
+  if seconds >= 60 and seconds % 60 == 0 then
+    return string.format("%d min", seconds / 60)
+  end
+  return fmtClock(seconds)
+end
+Sated.FmtDur = fmtDur
+
+-- Wall-clock time lust comes (or came) back up, e.g. "14:32".
+function Sated.BackTime(record)
+  return date("%H:%M", record.server + Sated.SATED_DURATION)
+end
+
 -- ---------------------------------------------------------------------------
 -- Alerts: a dedicated message frame (RaidNotice-style) + sound. Pure local
 -- display — no chat, no comms — so it is unrestricted in combat.
@@ -77,11 +91,26 @@ Sated.msgFrame = msgFrame
 
 local ALERT_SOUND = (SOUNDKIT and SOUNDKIT.RAID_WARNING) or 8959
 
-local function fireMark(mark)
-  Sated.DebugLog("mark", fmtClock(mark))
-  msgFrame:AddMessage(string.format("|cffff4444Lust used %s ago|r", fmtClock(mark)))
+local function alert(text)
+  msgFrame:AddMessage(text)
   if Sated.db == nil or Sated.db.sound ~= false then  -- default: on
     PlaySound(ALERT_SOUND)
+  end
+end
+
+-- Fires the moment the Sated debuff expires: lust is castable again.
+local function fireReady()
+  Sated.DebugLog("ready")
+  alert("|cff33ff99Lust is up!|r")
+  if Sated.OnLustReady then Sated.OnLustReady(Sated.db and Sated.db.lastLust) end
+end
+
+-- Fires at each mark AFTER lust came back up ("it's been sitting ready").
+local function fireMark(mark)
+  Sated.DebugLog("mark", fmtDur(mark))
+  alert(string.format("|cffff4444Lust has been up for %s|r", fmtDur(mark)))
+  if Sated.OnLustUpMark then
+    Sated.OnLustUpMark(Sated.db and Sated.db.lastLust, mark)
   end
 end
 
@@ -102,9 +131,15 @@ local function armTimers()
   cancelTimers()
   local e = elapsed()
   if e == nil then return end
+  local ready = Sated.SATED_DURATION
+  -- "Lust is up" the moment the cooldown (Sated debuff) ends...
+  if ready - e > 0 then
+    table.insert(activeTimers, C_Timer.NewTimer(ready - e, fireReady))
+  end
+  -- ...then marks counted from that moment: ready + 3:00 / 5:00 / 10:00.
   local marks = (Sated.db and Sated.db.marks) or Sated.DEFAULT_MARKS
   for _, mark in ipairs(marks) do
-    local remaining = mark - e
+    local remaining = ready + mark - e
     if remaining > 0 then
       local t = C_Timer.NewTimer(remaining, function() fireMark(mark) end)
       table.insert(activeTimers, t)
@@ -228,9 +263,18 @@ function commands.status()
   local e = elapsed()
   if e == nil then
     print("|cff33ff99Sated|r loaded, no lust recorded.")
+    return
+  end
+  local who = (Sated.db.lastLust.mine and " (yours)") or ""
+  if e < Sated.SATED_DURATION then
+    print(string.format(
+      "|cff33ff99Sated|r: last lust %s ago%s — back up in %s (around %s).",
+      fmtClock(e), who, fmtClock(Sated.SATED_DURATION - e),
+      Sated.BackTime(Sated.db.lastLust)))
   else
-    local who = (Sated.db.lastLust.mine and " (yours)") or ""
-    print(string.format("|cff33ff99Sated|r: last lust %s ago%s.", fmtClock(e), who))
+    print(string.format(
+      "|cff33ff99Sated|r: lust is UP — has been up for %s (last used %s ago%s).",
+      fmtClock(e - Sated.SATED_DURATION), fmtClock(e), who))
   end
 end
 

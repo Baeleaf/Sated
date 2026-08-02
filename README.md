@@ -10,20 +10,24 @@ and announces your own lust casts to the party. ~350 lines, no libraries.
   get a Sated-family debuff — Sated watches your own debuff bar
   (`UNIT_AURA` on "player"), so it works even if nobody else in the
   group has the addon, and never touches restricted party combat data.
-- **Timers.** On-screen alert + sound at configurable marks after lust
-  (default 3:00, 5:00, 10:00 — the 10-minute mark is when lust is
-  usable again). Marks survive `/reload` without double-firing.
-- **Caster-only announce.** If *you* cast the lust, one party/instance
-  chat message: "Lust used — back around HH:MM." Five addon users, one
-  message. During combat or an encounter the message queues and is sent
-  after, rephrased to "Lust was used 2:10 ago — back around HH:MM."
+- **Knows when lust is back up.** The Sated debuff is the 10-minute
+  cooldown; when it ends you get an on-screen **"Lust is up!"** alert +
+  sound, then reminders of how long it's been sitting ready at
+  configurable marks (default 3, 5, and 10 minutes after it came back
+  up). All timers survive `/reload` without double-firing.
+- **Caster-only announce.** If *you* cast the lust, the same beats go
+  to party/instance chat: "Lust used — back around HH:MM." at the cast,
+  **"Lust is up."** when the cooldown ends, and **"Lust has been up for
+  3 min."** at each mark. Five addon users, one message per event.
+  During combat or an encounter, messages queue (newest event only) and
+  are sent after regen/encounter end, re-phrased from the live clock.
 
 ## Commands
 
 | Command | Effect |
 | --- | --- |
-| `/sated` | Time since last lust |
-| `/sated marks 180 300 600` | Set alert marks (seconds after lust) |
+| `/sated` | Time since last lust / how long lust has been up |
+| `/sated marks 180 300 600` | Set reminder marks (seconds after lust comes back up) |
 | `/sated sound on\|off` | Alert sound (default on) |
 | `/sated announce on\|off` | Party announce (default on) |
 | `/sated reset` | Clear the current lust window |

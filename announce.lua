@@ -1,12 +1,17 @@
--- Sated announce layer. Caster-only: fires only when WE cast a lust spell,
--- so five party members with the addon still produce exactly one message.
+-- Sated announce layer. Caster-only: chat fires only for windows WE opened
+-- (mine = true), so five party members with the addon still produce exactly
+-- one message per event. Events: the initial cast, "Lust is up" when the
+-- cooldown ends, and each "has been up for N min" mark after that.
+--
 -- Addon chat is locked during active encounters/M+ combat but permitted
 -- before/after — announce immediately when clear, otherwise queue and flush
--- on PLAYER_REGEN_ENABLED / ENCOUNTER_END. The queue is in-memory only: a
--- reload or zone change drops it silently (stale info by then).
+-- on PLAYER_REGEN_ENABLED / ENCOUNTER_END. The queue holds only the newest
+-- pending event and is in-memory only: a reload or zone change drops it
+-- silently (stale info by then). Flushed messages are re-phrased from the
+-- clock at send time, never from when they were queued.
 local _, Sated = ...
 
-local queue = nil            -- at most one pending record per window
+local queue = nil            -- { record, key } — newest pending event only
 local encounterActive = false
 
 local function announceEnabled()
@@ -23,52 +28,71 @@ local function combatLocked()
   return InCombatLockdown() or UnitAffectingCombat("player") or encounterActive
 end
 
-local function backTime(record)
-  return date("%H:%M", record.server + Sated.SATED_DURATION)
+-- One phrasing function for every announce, computed from the current
+-- clock so queued messages never report stale numbers.
+local function phrase(record)
+  local e = Sated.Elapsed() or 0
+  local ready = Sated.SATED_DURATION
+  if e < 3 then
+    return string.format("Lust used — back around %s.", Sated.BackTime(record))
+  elseif e < ready then
+    return string.format("Lust was used %s ago — back around %s.",
+      Sated.FmtClock(e), Sated.BackTime(record))
+  end
+  local up = e - ready
+  if up < 3 then
+    return "Lust is up."
+  end
+  return string.format("Lust has been up for %s.", Sated.FmtDur(up))
 end
 
-local function send(record)
+local function send(record, key)
   local chan = channel()
   if not chan then return end  -- group dissolved while queued; drop
-  local e = Sated.Elapsed() or 0
-  local msg
-  if e < 3 then
-    msg = string.format("Lust used — back around %s.", backTime(record))
+  SendChatMessage(phrase(record), chan)
+  record.announcedKeys = record.announcedKeys or {}
+  record.announcedKeys[key] = true
+  Sated.DebugLog("announce", key .. " → " .. chan)
+end
+
+-- Route an announce event: dedup per (window, key), then send or queue.
+local function request(record, key)
+  if not record or not record.mine then return end
+  if record.announcedKeys and record.announcedKeys[key] then return end
+  if not announceEnabled() then return end
+  if not IsInGroup() then return end
+  if combatLocked() then
+    queue = { record = record, key = key }
+    Sated.DebugLog("queue", key .. " held for combat/encounter end")
   else
-    msg = string.format("Lust was used %s ago — back around %s.",
-      Sated.FmtClock(e), backTime(record))
+    send(record, key)
   end
-  SendChatMessage(msg, chan)
-  record.announced = true
-  Sated.DebugLog("announce", chan)
 end
 
 local function flush()
   if not queue then return end
   if combatLocked() then return end  -- e.g. regen mid-encounter: keep waiting
-  local record = queue
+  local record, key = queue.record, queue.key
   queue = nil
-  -- Only announce if this is still the live, unannounced window.
+  -- Only announce if this is still the live window and event.
   if not Sated.db or record ~= Sated.db.lastLust then return end
-  if not Sated.WindowActive() then return end
-  if record.announced then return end
+  if record.announcedKeys and record.announcedKeys[key] then return end
   if not announceEnabled() then return end
-  send(record)
+  send(record, key)
 end
 
--- Called by core when a window opens, or when an active window is upgraded
--- to mine=true (cast and debuff events arrive in either order).
+-- Hooks called by core ------------------------------------------------
+
 function Sated.OnWindowOpened(record)
-  if not record.mine then return end
-  if record.announced then return end
-  if not announceEnabled() then return end
-  if not IsInGroup() then return end
-  if combatLocked() then
-    queue = record
-    Sated.DebugLog("queue", "announce held for combat/encounter end")
-  else
-    send(record)
-  end
+  request(record, "cast")
+end
+
+function Sated.OnLustReady(record)
+  request(record, "ready")
+end
+
+function Sated.OnLustUpMark(record, mark)
+  request(record, "up" .. tostring(mark))
 end
 
 function Sated.OnZoneChanged()
