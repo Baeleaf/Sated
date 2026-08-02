@@ -159,6 +159,14 @@ end
 function FireFullAuraUpdate()
   FireEvent("UNIT_AURA", "player", { isFullUpdate = true })
 end
+function RemoveAura(aura, opts)
+  opts = opts or {}
+  for i, a in ipairs(auras) do
+    if a == aura then table.remove(auras, i); break end
+  end
+  local id = opts.secretId and MakeSecret() or aura.auraInstanceID
+  FireEvent("UNIT_AURA", "player", { removedAuraInstanceIDs = { id } })
+end
 function ClearAuras() auras = {} end
 
 -- casts ---------------------------------------------------------------

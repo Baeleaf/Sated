@@ -36,23 +36,21 @@ local function combatLocked()
 end
 
 -- One phrasing function for every announce, computed from the current
--- clock so queued messages never report stale numbers.
+-- clock so queued messages never report stale numbers. UpFor() is anchored
+-- to the debuff actually leaving the bar, so artificial resets (Proving
+-- Grounds etc.) phrase correctly too.
 local function phrase(record, key)
-  local e = Sated.Elapsed() or 0
-  local dur = Sated.SATED_DURATION
-  if e >= dur then
-    local up = e - dur
+  local up = Sated.UpFor()
+  if up ~= nil then
     if up < 3 then return "Lust is up." end
     return string.format("Lust has been up for %s.", Sated.FmtDur(up))
   end
-  if key == "cast" then
-    if e < 3 then
-      return string.format("Lust used — back around %s.", Sated.BackTime(record))
-    end
-    return string.format("Lust was used %s ago — back around %s.",
-      Sated.FmtClock(e), Sated.BackTime(record))
+  local e = Sated.Elapsed() or 0
+  if key == "cast" and e < 3 then
+    return string.format("Lust used — back around %s.", Sated.BackTime(record))
   end
-  return string.format("Lust back in %s.", Sated.FmtDur(dur - e))
+  return string.format("Lust was used %s ago — back around %s.",
+    Sated.FmtClock(e), Sated.BackTime(record))
 end
 
 local function send(record, key)

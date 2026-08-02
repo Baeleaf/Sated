@@ -11,11 +11,14 @@ and announces your own lust casts to the party. ~350 lines, no libraries.
   (`UNIT_AURA` on "player"), so it works even if nobody else in the
   group has the addon, and never touches restricted party combat data.
 - **Tracks when lust can be pressed again.** The Sated debuff is the
-  10-minute blocker; the moment it falls off you get **"Lust is up!"**
-  with sound. Then reminders of how long lust has been sitting
-  available at configurable marks after that moment (default 3, 5, and
-  10 minutes): **"Lust has been up for 3 min"**, and so on. All timers
-  survive `/reload` without double-firing.
+  10-minute blocker; the moment it actually leaves your bar you get
+  **"Lust is up!"** with sound — whether it expired naturally or was
+  wiped early by an artificial reset (Proving Grounds, M+ start, arena
+  gates). Then reminders of how long lust has been sitting available at
+  configurable marks after that moment (default 3, 5, and 10 minutes):
+  **"Lust has been up for 3 min"**, and so on. A re-lust after a reset
+  starts a fresh cycle. All timers survive `/reload` without
+  double-firing, including reloads that straddle a reset.
 - **Announces to party chat.** Every beat also goes to party/instance
   chat automatically: "Lust used — back around HH:MM." at the cast,
   **"Lust is up."** when the debuff drops, and the up-for reminders.

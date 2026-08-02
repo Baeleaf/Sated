@@ -34,11 +34,22 @@ end
 local Guard = Sated.Guard
 
 -- ---------------------------------------------------------------------------
--- Lust window state. The record persists in SatedDB.lastLust:
---   { at = GetTime(), server = GetServerTime(), mine = boolean }
--- Elapsed time is always computed from the server timestamp so it survives
--- /reload (GetTime alone does not).
+-- Lust window state, persisted in SatedDB.lastLust:
+--   at         GetTime() at lust use
+--   server     GetServerTime() at lust use
+--   mine       true if we (or our pet) cast it
+--   debuffSeen true once the Sated debuff was actually observed on our bar
+--   readyServer server timestamp lust became pressable again (set when the
+--              debuff really falls off — naturally OR via an artificial
+--              reset like Proving Grounds; defaults to use + 10 min)
+--   readyFired true once the "Lust is up" beat has fired
+-- Elapsed values are always computed from server timestamps so they
+-- survive /reload (GetTime alone does not).
 -- ---------------------------------------------------------------------------
+local function readyAtServer(record)
+  return record.readyServer or (record.server + Sated.SATED_DURATION)
+end
+
 local function elapsed()
   local last = Sated.db and Sated.db.lastLust
   if not last or not last.server then return nil end
@@ -48,9 +59,25 @@ local function elapsed()
 end
 Sated.Elapsed = elapsed
 
+-- Seconds lust has been pressable again, or nil while still on cooldown.
+function Sated.UpFor()
+  local record = Sated.db and Sated.db.lastLust
+  if not record or not record.server then return nil end
+  local now = GetServerTime()
+  if record.readyFired or now >= readyAtServer(record) then
+    local up = now - readyAtServer(record)
+    if up < 0 then up = 0 end
+    return up
+  end
+  return nil
+end
+
+-- The window is "active" while the debuff is (believed) still on us.
 local function windowActive()
-  local e = elapsed()
-  return e ~= nil and e < Sated.SATED_DURATION
+  local record = Sated.db and Sated.db.lastLust
+  if not record or not record.server then return false end
+  if record.readyFired then return false end
+  return GetServerTime() < readyAtServer(record)
 end
 Sated.WindowActive = windowActive
 
@@ -72,7 +99,7 @@ Sated.FmtDur = fmtDur
 
 -- Wall-clock time lust comes (or came) back up, e.g. "14:32".
 function Sated.BackTime(record)
-  return date("%H:%M", record.server + Sated.SATED_DURATION)
+  return date("%H:%M", readyAtServer(record))
 end
 
 -- ---------------------------------------------------------------------------
@@ -98,11 +125,16 @@ local function alert(text)
   end
 end
 
--- Fires the moment the Sated debuff expires: lust is castable again.
+-- Fires once per window, the moment lust is pressable again — whether the
+-- debuff expired naturally or was wiped by a reset (Proving Grounds etc).
 local function fireReady()
+  local record = Sated.db and Sated.db.lastLust
+  if not record or record.readyFired then return end
+  record.readyFired = true
+  record.readyServer = record.readyServer or GetServerTime()
   Sated.DebugLog("ready")
   alert("|cff33ff99Lust is up!|r")
-  if Sated.OnLustReady then Sated.OnLustReady(Sated.db and Sated.db.lastLust) end
+  if Sated.OnLustReady then Sated.OnLustReady(record) end
 end
 
 -- Fires at each mark, counted from the moment the debuff fell off — i.e.
@@ -116,10 +148,11 @@ local function fireMark(mark)
 end
 
 -- ---------------------------------------------------------------------------
--- Timer engine. Marks are seconds-after-lust; on window open (or /reload
--- mid-window via PLAYER_ENTERING_WORLD) we schedule only the marks still in
--- the future, computed from the persisted server timestamp — already-passed
--- marks never double-fire.
+-- Timer engine. Everything is anchored to the READY moment (readyAtServer):
+-- the ready beat itself, then marks at ready + 3/5/10 min (defaults). When
+-- the debuff drops early, timers re-arm against the new anchor; on /reload
+-- remaining beats are recomputed from persisted timestamps — already-passed
+-- beats never double-fire.
 -- ---------------------------------------------------------------------------
 local activeTimers = {}
 
@@ -130,18 +163,15 @@ end
 
 local function armTimers()
   cancelTimers()
-  local e = elapsed()
-  if e == nil then return end
-  local ready = Sated.SATED_DURATION
-  -- "Lust is up" the moment the cooldown (Sated debuff) ends...
-  if ready - e > 0 then
-    table.insert(activeTimers, C_Timer.NewTimer(ready - e, fireReady))
+  local record = Sated.db and Sated.db.lastLust
+  if not record or not record.server then return end
+  local readyIn = readyAtServer(record) - GetServerTime()
+  if not record.readyFired and readyIn > 0 then
+    table.insert(activeTimers, C_Timer.NewTimer(readyIn, fireReady))
   end
-  -- ...then marks counted from that moment (default 3/5/10 min after the
-  -- debuff falls off): ready + mark.
   local marks = (Sated.db and Sated.db.marks) or Sated.DEFAULT_MARKS
   for _, mark in ipairs(marks) do
-    local remaining = ready + mark - e
+    local remaining = readyIn + mark
     if remaining > 0 then
       local t = C_Timer.NewTimer(remaining, function() fireMark(mark) end)
       table.insert(activeTimers, t)
@@ -150,7 +180,18 @@ local function armTimers()
 end
 Sated.ArmTimers = armTimers
 
-local function openWindow(mine)
+-- The debuff actually left our bar before its natural end (artificial
+-- reset: Proving Grounds, M+ start, arena gates...). Lust is up NOW —
+-- re-anchor everything to this moment.
+local function onDebuffDropped(record)
+  if record.readyFired then return end
+  Sated.DebugLog("dropped", "debuff removed before natural expiry")
+  record.readyServer = GetServerTime()
+  armTimers()
+  fireReady()
+end
+
+local function openWindow(mine, sawDebuff)
   if windowActive() then
     -- Re-detection inside an active window: only upgrade the mine flag
     -- (cast event and debuff event both fire for our own lust, in either
@@ -161,7 +202,12 @@ local function openWindow(mine)
     end
     return
   end
-  Sated.db.lastLust = { at = GetTime(), server = GetServerTime(), mine = mine or false }
+  Sated.db.lastLust = {
+    at = GetTime(),
+    server = GetServerTime(),
+    mine = mine or false,
+    debuffSeen = sawDebuff or false,
+  }
   Sated.DebugLog("detect", mine and "mine" or "party")
   print("|cff33ff99Sated|r: Lust detected — timers armed.")
   armTimers()
@@ -172,7 +218,9 @@ end
 -- Detection. Local-first: the timer engine keys off the player's OWN
 -- Sated-family debuff (every party member gets it the moment lust is
 -- popped), so the addon works solo-installed. The cast path only tags the
--- window as ours to feed the announce layer.
+-- window as ours to feed the announce layer. While a window is active we
+-- also watch for the debuff LEAVING the bar, which is what actually means
+-- "lust is up" — including artificial resets.
 -- ---------------------------------------------------------------------------
 local function auraMatches(aura)
   if not aura then return false end
@@ -180,13 +228,13 @@ local function auraMatches(aura)
   return spellId ~= nil and Sated.SATED_DEBUFFS[spellId] == true
 end
 
-local function scanAllAuras()
+local function scanForSated()
   for i = 1, 40 do
     local aura = C_UnitAuras.GetAuraDataByIndex("player", i, "HARMFUL")
     if not aura then break end
-    if auraMatches(aura) then return true end
+    if auraMatches(aura) then return aura end
   end
-  return false
+  return nil
 end
 
 -- ---------------------------------------------------------------------------
@@ -214,43 +262,78 @@ function handlers.ADDON_LOADED(name)
 end
 
 function handlers.PLAYER_ENTERING_WORLD()
-  -- Fires after login/reload/zone-in. Re-arm whatever marks are still ahead
-  -- of us; armTimers cancels first, so this is idempotent.
-  armTimers()
+  -- Fires after login/reload/zone-in. If the window claims the debuff is
+  -- still on us but the bar disagrees (reset happened during a loading
+  -- screen, or we reloaded after one), treat it as dropped. Otherwise
+  -- re-arm whatever beats are still ahead; armTimers cancels first, so
+  -- this is idempotent.
+  local record = Sated.db and Sated.db.lastLust
+  if record and windowActive() and record.debuffSeen and not scanForSated() then
+    onDebuffDropped(record)
+  else
+    armTimers()
+  end
   if Sated.OnZoneChanged then Sated.OnZoneChanged() end
 end
 
 function handlers.UNIT_AURA(unit, updateInfo)
   if unit ~= "player" then return end
-  if windowActive() then return end
-  -- Decide between the incremental payload and a whole-bar rescan. A secret
-  -- isFullUpdate flag counts as a full update: the rescan is the safe path,
-  -- and issecretvalue is the only operation permitted on a secret.
-  local useIncremental = false
-  if updateInfo and updateInfo.addedAuras then
+
+  -- Classify the payload. A secret isFullUpdate flag counts as a full
+  -- update: the rescan is the safe path, and issecretvalue is the only
+  -- operation permitted on a secret.
+  local full
+  if updateInfo == nil then
+    full = true
+  else
     local rawFull = updateInfo.isFullUpdate
     if issecret(rawFull) then
       Sated.DebugLog("secret", "updateInfo.isFullUpdate")
-    elseif not rawFull then
-      useIncremental = true
+      full = true
+    else
+      full = rawFull and true or false
     end
   end
-  local found
-  if useIncremental then
+
+  if windowActive() then
+    -- Active window: watch for the debuff dropping (naturally or via an
+    -- artificial reset). Only re-check the bar when something was removed
+    -- or on a full update; and only trust "absent" as a drop if we have
+    -- actually seen the debuff on the bar before (a cast-opened window in
+    -- fully-secret content never observes it — degrade to the clock).
+    local record = Sated.db.lastLust
+    local removed = (not full) and updateInfo.removedAuraInstanceIDs or nil
+    if full or (removed and #removed > 0) then
+      if scanForSated() then
+        record.debuffSeen = true
+      elseif record.debuffSeen then
+        onDebuffDropped(record)
+      end
+    elseif not record.debuffSeen and updateInfo.addedAuras then
+      for _, aura in ipairs(updateInfo.addedAuras) do
+        if auraMatches(aura) then record.debuffSeen = true; break end
+      end
+    end
+    return
+  end
+
+  -- No active window: look for a fresh Sated-family debuff.
+  local found = false
+  if full then
+    found = scanForSated() ~= nil
+  elseif updateInfo.addedAuras then
     for _, aura in ipairs(updateInfo.addedAuras) do
       if auraMatches(aura) then found = true; break end
     end
-  else
-    found = scanAllAuras()
   end
-  if found then openWindow(false) end
+  if found then openWindow(false, true) end
 end
 
 function handlers.UNIT_SPELLCAST_SUCCEEDED(unit, castGUID, spellId)
   if unit ~= "player" and unit ~= "pet" then return end
   local id = Guard(spellId, "cast.spellId")
   if id ~= nil and Sated.LUST_CASTS[id] then
-    openWindow(true)
+    openWindow(true, false)
   end
 end
 
@@ -275,16 +358,18 @@ function commands.status()
     print("|cff33ff99Sated|r loaded, no lust recorded.")
     return
   end
-  local who = (Sated.db.lastLust.mine and " (yours)") or ""
-  if e < Sated.SATED_DURATION then
+  local record = Sated.db.lastLust
+  local who = (record.mine and " (yours)") or ""
+  local up = Sated.UpFor()
+  if up == nil then
     print(string.format(
       "|cff33ff99Sated|r: last lust %s ago%s — back up in %s (around %s).",
-      fmtClock(e), who, fmtClock(Sated.SATED_DURATION - e),
-      Sated.BackTime(Sated.db.lastLust)))
+      fmtClock(e), who, fmtClock(readyAtServer(record) - GetServerTime()),
+      Sated.BackTime(record)))
   else
     print(string.format(
       "|cff33ff99Sated|r: lust is UP — has been up for %s (last used %s ago%s).",
-      fmtClock(e - Sated.SATED_DURATION), fmtClock(e), who))
+      fmtClock(up), fmtClock(e), who))
   end
 end
 
@@ -307,7 +392,7 @@ function commands.marks(rest)
   local parts = {}
   for _, m in ipairs(newMarks) do parts[#parts + 1] = fmtClock(m) end
   print("|cff33ff99Sated|r: marks set to " .. table.concat(parts, ", ") .. ".")
-  if windowActive() then armTimers() end
+  if Sated.db.lastLust then armTimers() end
 end
 
 function commands.sound(rest)

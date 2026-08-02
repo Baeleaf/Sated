@@ -502,3 +502,120 @@ add("/sated status flips to up-for phrasing after ready", function()
   assert(PRINTED[#PRINTED]:find("has been up for 1:30"),
     "up-for time wrong: " .. PRINTED[#PRINTED])
 end)
+
+-- Sprint 8: artificial resets (Proving Grounds etc.) ------------------
+
+add("early debuff removal fires 'Lust is up' immediately", function()
+  SatedDB.marks = {}
+  local a = ApplyAura(57724, 600)
+  AdvanceTime(60)
+  RemoveAura(a)   -- Proving Grounds reset wipes the debuff at 1:00
+  assert(#SCREEN_MESSAGES == 1, "no ready alert on early removal")
+  assert(SCREEN_MESSAGES[1]:find("Lust is up"), "wrong alert: " .. SCREEN_MESSAGES[1])
+  RunSlash("/sated")
+  assert(PRINTED[#PRINTED]:find("lust is UP"), "status not up: " .. PRINTED[#PRINTED])
+end)
+
+add("marks re-anchor to the actual drop moment", function()
+  RunSlash("/sated marks 10 20")
+  local a = ApplyAura(57724, 600)
+  AdvanceTime(60)
+  RemoveAura(a)
+  AdvanceTime(25)  -- marks land at drop+10 and drop+20
+  assert(#SCREEN_MESSAGES == 3, "expected ready + 2 marks, got " .. #SCREEN_MESSAGES)
+  assert(SCREEN_MESSAGES[2]:find("has been up for 0:10")
+    and SCREEN_MESSAGES[3]:find("has been up for 0:20"),
+    "marks not re-anchored to drop")
+end)
+
+add("chat announces the reset ready + re-anchored marks", function()
+  SetGroup(true, false)
+  CastSpell(2825)          -- SENT 1
+  local a = ApplyAura(57724, 600)
+  AdvanceTime(60)
+  RemoveAura(a)
+  assert(#SENT_MESSAGES == 2 and SENT_MESSAGES[2].msg == "Lust is up.",
+    "no ready chat on reset")
+  AdvanceTime(180)         -- default 3-min mark, anchored to the drop
+  assert(#SENT_MESSAGES == 3 and SENT_MESSAGES[3].msg == "Lust has been up for 3 min.",
+    "3-min mark not re-anchored: " .. tostring(SENT_MESSAGES[3] and SENT_MESSAGES[3].msg))
+end)
+
+add("natural expiry + removal event: ready fires exactly once", function()
+  SatedDB.marks = {}
+  local a = ApplyAura(57724, 600)
+  AdvanceTime(601)         -- clock path fires ready
+  assert(#SCREEN_MESSAGES == 1, "no natural ready")
+  RemoveAura(a)            -- the removal event lands right after
+  AdvanceTime(30)
+  assert(#SCREEN_MESSAGES == 1, "ready double-fired: " .. #SCREEN_MESSAGES)
+end)
+
+add("removal just before the clock: once, and clock timer cancelled", function()
+  SatedDB.marks = {}
+  local a = ApplyAura(57724, 600)
+  AdvanceTime(599)
+  RemoveAura(a)            -- server removed it a hair early
+  assert(#SCREEN_MESSAGES == 1, "no ready on removal")
+  AdvanceTime(10)          -- the old 600s timer must not fire again
+  assert(#SCREEN_MESSAGES == 1, "clock timer double-fired")
+end)
+
+add("secret removal ids still detected via bar rescan", function()
+  SatedDB.marks = {}
+  local a = ApplyAura(57724, 600)
+  AdvanceTime(60)
+  RemoveAura(a, { secretId = true })
+  assert(#SCREEN_MESSAGES == 1 and SCREEN_MESSAGES[1]:find("Lust is up"),
+    "secret removal id broke reset detection")
+end)
+
+add("unrelated debuff removal does not end the window", function()
+  SatedDB.marks = {}
+  local lust = ApplyAura(57724, 600)
+  local moonfire = ApplyAura(8921, 12)
+  AdvanceTime(30)
+  RemoveAura(moonfire)
+  assert(#SCREEN_MESSAGES == 0, "unrelated removal ended the window")
+  AdvanceTime(575)         -- natural ready still at 600
+  assert(#SCREEN_MESSAGES == 1, "natural ready lost")
+end)
+
+add("re-lust after a reset starts a fresh cycle", function()
+  RunSlash("/sated marks 30")
+  local a = ApplyAura(57724, 600)
+  AdvanceTime(60)
+  RemoveAura(a)            -- reset; ready #1 fires (1 alert)
+  AdvanceTime(5)
+  ApplyAura(57724, 600)    -- lust pressed again in Proving Grounds
+  assert(PRINTED[#PRINTED]:find("timers armed"), "re-lust not detected")
+  AdvanceTime(700)         -- new ready at +600, new mark at +630
+  assert(#SCREEN_MESSAGES == 3,
+    "expected reset-ready, new ready, new mark; got " .. #SCREEN_MESSAGES)
+  assert(SCREEN_MESSAGES[2]:find("Lust is up")
+    and SCREEN_MESSAGES[3]:find("has been up for 0:30"),
+    "fresh cycle beats wrong")
+end)
+
+add("reload into a reset state fires ready on PLAYER_ENTERING_WORLD", function()
+  -- SavedVariables restored: window opened 60s ago, debuff was seen, but
+  -- the bar is empty now (reset happened around the loading screen).
+  SatedDB.lastLust = { at = GetTime() - 60, server = GetServerTime() - 60,
+    mine = false, debuffSeen = true }
+  FireEvent("PLAYER_ENTERING_WORLD")
+  assert(#SCREEN_MESSAGES == 1 and SCREEN_MESSAGES[1]:find("Lust is up"),
+    "reload-resync missed the reset")
+  AdvanceTime(180)         -- default 3-min mark anchored to the resync
+  assert(#SCREEN_MESSAGES == 2 and SCREEN_MESSAGES[2]:find("has been up for 3 min"),
+    "marks not anchored to resync drop")
+end)
+
+add("cast-only window (debuff never seen) trusts the clock, not absence", function()
+  SatedDB.marks = {}
+  CastSpell(2825)          -- window opens; no debuff ever observed
+  AdvanceTime(60)
+  FireEvent("UNIT_AURA", "player", { removedAuraInstanceIDs = { 4242 } })
+  assert(#SCREEN_MESSAGES == 0, "absence treated as drop without debuffSeen")
+  AdvanceTime(545)         -- natural clock ready at 600
+  assert(#SCREEN_MESSAGES == 1, "clock fallback ready missing")
+end)
