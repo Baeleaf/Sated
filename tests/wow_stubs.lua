@@ -151,7 +151,9 @@ function ApplyAura(spellId, duration, opts)
   }
   nextInstanceID = nextInstanceID + 1
   table.insert(auras, aura)
-  FireEvent("UNIT_AURA", "player", { addedAuras = { aura }, isFullUpdate = false })
+  if not opts.silentAdd then
+    FireEvent("UNIT_AURA", "player", { addedAuras = { aura }, isFullUpdate = false })
+  end
   return aura
 end
 function FireFullAuraUpdate()
