@@ -102,29 +102,6 @@ function Sated.BackTime(record)
   return date("%H:%M", readyAtServer(record))
 end
 
--- ---------------------------------------------------------------------------
--- Alerts: a dedicated message frame (RaidNotice-style) + sound. Pure local
--- display — no chat, no comms — so it is unrestricted in combat.
--- ---------------------------------------------------------------------------
-local msgFrame = CreateFrame("MessageFrame", "SatedMessageFrame", UIParent)
-msgFrame:SetPoint("TOP", UIParent, "TOP", 0, -220)
-msgFrame:SetSize(600, 60)
-msgFrame:SetFrameStrata("HIGH")
-msgFrame:SetFontObject(GameFontNormalHuge)
-msgFrame:SetInsertMode("TOP")
-msgFrame:SetTimeVisible(4)
-msgFrame:SetFadeDuration(1)
-Sated.msgFrame = msgFrame
-
-local ALERT_SOUND = (SOUNDKIT and SOUNDKIT.RAID_WARNING) or 8959
-
-local function alert(text)
-  msgFrame:AddMessage(text)
-  if Sated.db == nil or Sated.db.sound ~= false then  -- default: on
-    PlaySound(ALERT_SOUND)
-  end
-end
-
 -- Fires once per window, the moment lust is pressable again — whether the
 -- debuff expired naturally or was wiped by a reset (Proving Grounds etc).
 local function fireReady()
@@ -133,7 +110,6 @@ local function fireReady()
   record.readyFired = true
   record.readyServer = record.readyServer or GetServerTime()
   Sated.DebugLog("ready")
-  alert("|cff33ff99Lust is up!|r")
   if Sated.OnLustReady then Sated.OnLustReady(record) end
 end
 
@@ -141,7 +117,6 @@ end
 -- how long lust has been sitting available.
 local function fireMark(mark)
   Sated.DebugLog("mark", fmtDur(mark))
-  alert(string.format("|cffff4444Lust has been up for %s|r", fmtDur(mark)))
   if Sated.OnLustMark then
     Sated.OnLustMark(Sated.db and Sated.db.lastLust, mark)
   end
@@ -209,7 +184,6 @@ local function openWindow(mine, sawDebuff)
     debuffSeen = sawDebuff or false,
   }
   Sated.DebugLog("detect", mine and "mine" or "party")
-  print("|cff33ff99Sated|r: Lust detected — timers armed.")
   armTimers()
   if Sated.OnWindowOpened then Sated.OnWindowOpened(Sated.db.lastLust) end
 end
@@ -393,19 +367,6 @@ function commands.marks(rest)
   for _, m in ipairs(newMarks) do parts[#parts + 1] = fmtClock(m) end
   print("|cff33ff99Sated|r: marks set to " .. table.concat(parts, ", ") .. ".")
   if Sated.db.lastLust then armTimers() end
-end
-
-function commands.sound(rest)
-  rest = (rest or ""):lower()
-  if rest == "on" then
-    Sated.db.sound = true
-  elseif rest == "off" then
-    Sated.db.sound = false
-  else
-    print("|cff33ff99Sated|r: usage: /sated sound on|off")
-    return
-  end
-  print("|cff33ff99Sated|r: sound " .. rest .. ".")
 end
 
 function commands.reset()

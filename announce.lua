@@ -1,6 +1,5 @@
--- Sated announce layer: mirrors the on-screen beats into party/instance
--- chat — the cast, countdown marks (3/5 min), "Lust is up." at the
--- 10-minute cooldown end, and any up-time marks after that.
+-- Sated announce layer: sends timer beats to party chat — the cast,
+-- "Lust is up!" at the cooldown end, and any up-time marks after that.
 --
 -- Modes (/sated announce):
 --   all    (default) announce every detected lust window, whoever cast it
@@ -43,7 +42,7 @@ end
 local function phrase(record, key)
   local up = Sated.UpFor()
   if up ~= nil then
-    if up < 3 then return "Lust is up." end
+    if up < 3 then return "Lust is up!" end
     return string.format("Lust has been up for %s.", Sated.FmtDur(up))
   end
   local e = Sated.Elapsed() or 0

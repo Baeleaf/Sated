@@ -52,9 +52,10 @@ def static_checks():
         if not os.path.exists(os.path.join(BASE, fname)):
             failures.append(f"missing file listed in TOC: {fname}")
     deploy = read("deploy.cmd")
-    for fname in ["Sated.toc"] + ADDON_FILES:
-        if fname not in deploy:
-            failures.append(f"deploy.cmd does not copy {fname}")
+    if "AddOns/Sated" not in deploy:
+        failures.append("deploy.cmd does not target AddOns/Sated")
+    if "Junction" not in deploy:
+        failures.append("deploy.cmd does not verify the junction")
     return failures
 
 
