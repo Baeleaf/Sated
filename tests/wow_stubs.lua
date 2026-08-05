@@ -107,6 +107,13 @@ end
 
 -- combat / encounter / group ------------------------------------------
 local inCombat = false
+local instanceDifficultyID = 8
+function GetInstanceInfo()
+  return "Test Instance", "party", instanceDifficultyID
+end
+function SetInstanceDifficulty(id)
+  instanceDifficultyID = id
+end
 function InCombatLockdown() return inCombat end
 function UnitAffectingCombat(unit) return inCombat end
 function SetCombat(flag)

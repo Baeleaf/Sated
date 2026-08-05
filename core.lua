@@ -33,6 +33,16 @@ function Sated.Guard(v, ctx)
 end
 local Guard = Sated.Guard
 
+local MYTHIC_KEYSTONE_DIFFICULTY_ID = 8
+
+local function enabledHere()
+  if Sated.db and Sated.db.testMode then return true end
+  local difficultyID = Guard(select(3, GetInstanceInfo()),
+    "instance.difficultyID")
+  return difficultyID == MYTHIC_KEYSTONE_DIFFICULTY_ID
+end
+Sated.EnabledHere = enabledHere
+
 -- ---------------------------------------------------------------------------
 -- Lust window state, persisted in SatedDB.lastLust:
 --   at         GetTime() at lust use
@@ -105,6 +115,7 @@ end
 -- Fires once per window, the moment lust is pressable again — whether the
 -- debuff expired naturally or was wiped by a reset (Proving Grounds etc).
 local function fireReady()
+  if not enabledHere() then return end
   local record = Sated.db and Sated.db.lastLust
   if not record or record.readyFired then return end
   record.readyFired = true
@@ -116,6 +127,7 @@ end
 -- Fires at each mark, counted from the moment the debuff fell off — i.e.
 -- how long lust has been sitting available.
 local function fireMark(mark)
+  if not enabledHere() then return end
   Sated.DebugLog("mark", fmtDur(mark))
   if Sated.OnLustMark then
     Sated.OnLustMark(Sated.db and Sated.db.lastLust, mark)
@@ -138,6 +150,7 @@ end
 
 local function armTimers()
   cancelTimers()
+  if not enabledHere() then return end
   local record = Sated.db and Sated.db.lastLust
   if not record or not record.server then return end
   local readyIn = readyAtServer(record) - GetServerTime()
@@ -155,6 +168,12 @@ local function armTimers()
 end
 Sated.ArmTimers = armTimers
 
+local function clearTracking()
+  cancelTimers()
+  if Sated.db then Sated.db.lastLust = nil end
+  if Sated.OnZoneChanged then Sated.OnZoneChanged() end
+end
+
 -- The debuff actually left our bar before its natural end (artificial
 -- reset: Proving Grounds, M+ start, arena gates...). Lust is up NOW —
 -- re-anchor everything to this moment.
@@ -167,6 +186,7 @@ local function onDebuffDropped(record)
 end
 
 local function openWindow(mine, sawDebuff)
+  if not enabledHere() then return end
   if windowActive() then
     -- Re-detection inside an active window: only upgrade the mine flag
     -- (cast event and debuff event both fire for our own lust, in either
@@ -241,17 +261,27 @@ function handlers.PLAYER_ENTERING_WORLD()
   -- screen, or we reloaded after one), treat it as dropped. Otherwise
   -- re-arm whatever beats are still ahead; armTimers cancels first, so
   -- this is idempotent.
+  if not enabledHere() then
+    clearTracking()
+    Sated.DebugLog("scope", "inactive outside Mythic+")
+    return
+  end
+  if Sated.OnZoneChanged then Sated.OnZoneChanged() end
   local record = Sated.db and Sated.db.lastLust
   if record and windowActive() and record.debuffSeen and not scanForSated() then
     onDebuffDropped(record)
   else
     armTimers()
   end
-  if Sated.OnZoneChanged then Sated.OnZoneChanged() end
+end
+
+function handlers.CHALLENGE_MODE_START()
+  handlers.PLAYER_ENTERING_WORLD()
 end
 
 function handlers.UNIT_AURA(unit, updateInfo)
   if unit ~= "player" then return end
+  if not enabledHere() then return end
 
   -- Classify the payload. A secret isFullUpdate flag counts as a full
   -- update: the rescan is the safe path, and issecretvalue is the only
@@ -305,6 +335,7 @@ end
 
 function handlers.UNIT_SPELLCAST_SUCCEEDED(unit, castGUID, spellId)
   if unit ~= "player" and unit ~= "pet" then return end
+  if not enabledHere() then return end
   local id = Guard(spellId, "cast.spellId")
   if id ~= nil and Sated.LUST_CASTS[id] then
     openWindow(true, false)
@@ -313,6 +344,7 @@ end
 
 frame:RegisterEvent("ADDON_LOADED")
 frame:RegisterEvent("PLAYER_ENTERING_WORLD")
+frame:RegisterEvent("CHALLENGE_MODE_START")
 frame:RegisterUnitEvent("UNIT_AURA", "player")
 frame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player", "pet")
 frame:SetScript("OnEvent", function(_, event, ...)
@@ -327,6 +359,10 @@ local commands = {}
 Sated.commands = commands
 
 function commands.status()
+  if not enabledHere() then
+    print("|cff33ff99Sated|r: inactive outside Mythic+; use /sated test to enable test mode.")
+    return
+  end
   local e = elapsed()
   if e == nil then
     print("|cff33ff99Sated|r loaded, no lust recorded.")
@@ -344,6 +380,37 @@ function commands.status()
     print(string.format(
       "|cff33ff99Sated|r: lust is UP — has been up for %s (last used %s ago%s).",
       fmtClock(up), fmtClock(e), who))
+  end
+end
+
+function commands.test(rest)
+  rest = (rest or ""):lower():match("^%s*(.-)%s*$")
+  local enable
+  if rest == "" or rest == "on" then
+    enable = true
+  elseif rest == "off" then
+    enable = false
+  else
+    print("|cff33ff99Sated|r: usage: /sated test [on|off]")
+    return
+  end
+
+  local wasEnabled = enabledHere()
+  Sated.db.testMode = enable and true or nil
+  local nowEnabled = enabledHere()
+
+  if not wasEnabled and nowEnabled then
+    clearTracking()
+    local aura = scanForSated()
+    if aura then openWindow(false, true) end
+  elseif wasEnabled and not nowEnabled then
+    clearTracking()
+  end
+
+  if enable then
+    print("|cff33ff99Sated|r: test mode ON — addon works anywhere.")
+  else
+    print("|cff33ff99Sated|r: test mode OFF — Mythic+ only.")
   end
 end
 

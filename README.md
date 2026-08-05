@@ -1,11 +1,17 @@
 # Sated
 
 A tiny World of Warcraft (Midnight, 12.0.x) addon that notices when
-Bloodlust/Heroism-family effects are used, runs "lust back soon" timers,
-and announces them to party chat. No embedded libraries.
+Bloodlust/Heroism-family effects are used in Mythic+ dungeons, runs
+"lust back soon" timers, and announces them to party chat. It stays
+inactive everywhere else unless test mode is enabled. No embedded libraries.
 
 ## What it does
 
+- **Runs only in Mythic+.** Normal tracking is enabled only while the
+  current instance uses the Mythic Keystone difficulty. Raids, regular
+  dungeons, and the open world are ignored. `/sated test` enables a
+  persistent test mode that allows the addon to work anywhere;
+  `/sated test off` returns it to Mythic+-only operation.
 - **Detects lust locally.** The moment any lust hits your group, *you*
   get a Sated-family debuff — Sated watches your own debuff bar
   (`UNIT_AURA` on "player"), so it works even if nobody else in the
@@ -19,22 +25,25 @@ and announces them to party chat. No embedded libraries.
   frames. A re-lust after a reset starts a fresh cycle, and timers survive
   `/reload` without double-firing.
 - **Announces only to party chat.** The automatic messages use PARTY,
-  never instance chat:
-  "Lust used — back around HH:MM." at the cast,
-  **"Lust is up!"** when the debuff drops, and the up-for reminders.
+  never instance chat. Detecting a lust is silent. If lust is detected
+  during combat or an active encounter, Sated queues one summary and sends
+  it after both have ended: **"Lust was used X mins and Y secs ago"**,
+  or **"Lust was used Y secs ago"** when less than one minute has elapsed.
+  It also sends **"Lust is up!"** when the debuff drops and the configured
+  up-for reminders.
   By default any detected lust announces (`/sated announce all`); if
   several party members run Sated, switch to `/sated announce caster`
-  so only the caster's addon speaks. Automatic chat is not sent during
-  combat or an active encounter. Sated remembers only the newest pending
-  milestone, then sends one message after combat and the encounter have
-  both ended, re-phrased using the live clock. It does not show a local
-  substitute while waiting. Chat needs a group; nothing is sent while solo.
+  so only the caster's addon speaks. One pending combat event is retained;
+  a queued cast summary takes priority over later milestones from the same
+  lust window. Chat needs a group; nothing is sent while solo.
 
 ## Commands
 
 | Command | Effect |
 | --- | --- |
-| `/sated` | Show time since the last lust. While blocked, also show the remaining time and approximate ready clock time; once ready, show how long lust has been available. |
+| `/sated` | In Mythic+ or test mode, show time since the last lust. While blocked, also show the remaining time and approximate ready clock time; once ready, show how long lust has been available. Outside that scope, report that the addon is inactive. |
+| `/sated test` or `/sated test on` | Enable persistent test mode so detection, timers, and announcements work in raids, regular dungeons, and the open world. If a Sated-family debuff is already present, begin tracking it immediately. |
+| `/sated test off` | Disable test mode and return to Mythic+-only operation. If used outside Mythic+, clear the tracked window, timers, and queued announcement. |
 | `/sated marks 180 300 600` | Replace the reminder schedule. Values are positive seconds after the Sated-family debuff falls off, are sorted automatically, persist across sessions, and re-arm the current window. Defaults: 180, 300, and 600. |
 | `/sated announce all` | Announce every lust detected from your own Sated-family debuff. This is the default, but multiple Sated users can produce duplicate party messages. `/sated announce on` is an alias. |
 | `/sated announce caster` | Announce only when your character or pet cast the lust spell. Use this when several party members run Sated and you want only the caster's addon to speak. |
@@ -53,16 +62,21 @@ messages from non-casters.
 
 Known Midnight caveats baked into the design:
 
+- **Mythic+ scope.** Normal operation requires Mythic Keystone difficulty
+  ID 8 from `GetInstanceInfo()`. Test mode (`SatedDB.testMode`) overrides
+  that check and persists until explicitly disabled.
 - **Secret values.** Every aura/spellId read passes through `Guard()`
   (`core.lua`) before any comparison. If the game hands us a secret
   value, the feature silently degrades for that instance — the addon
   never throws a lua error. Secret encounters are logged to
   `/sated debug`.
-- **Chat lockdown.** No automated chat during combat or active encounters.
-  Only the newest pending milestone is sent afterward, preventing a burst
-  of stale messages.
-- **SavedVariables** (`SatedDB`) are written by the client at logout —
-  the addon does no per-frame persistence.
+- **Combat chat.** Sated deliberately sends no chat while combat or an
+  encounter is active. It retains one pending event and announces it after
+  both restrictions have cleared, prioritizing the cast summary when one
+  was queued during that combat.
+- **SavedVariables** (`SatedDB`) store the last active lust window, marks,
+  announcement mode, and test-mode override. They are written by the client
+  at logout; the addon does no per-frame persistence.
 
 ## When a patch breaks it
 

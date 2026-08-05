@@ -4,8 +4,9 @@
 -- Timeline model (Sprint 7 semantics): lust used at T; the 10-minute
 -- Sated debuff is the blocker. T+10:00 (debuff falls off) → "Lust is
 -- up". Marks are seconds AFTER that moment (default 3/5/10 min →
--- T+13:00 / T+15:00 / T+20:00) as "Lust has been up for N min". Chat
--- mirrors every beat; default announce mode is "all" (whoever cast it).
+-- T+13:00 / T+15:00 / T+20:00) as "Lust has been up for N min". Cast
+-- detection is silent; combat casts get one summary after combat ends.
+-- Default announce mode is "all" (whoever cast it).
 TESTS = {}
 local function add(name, fn) table.insert(TESTS, { name = name, fn = fn }) end
 local S = SATED_SHARED
@@ -14,9 +15,90 @@ local S = SATED_SHARED
 
 add("addon loads and ADDON_LOADED initializes SatedDB", function()
   assert(type(S.Guard) == "function", "Guard missing")
+  assert(type(S.EnabledHere) == "function", "scope gate missing")
   assert(type(SatedDB) == "table", "SatedDB not initialized")
   assert(S.db == SatedDB, "Sated.db not wired to SatedDB")
   assert(SatedDB.schema == 3, "schema stamp missing")
+end)
+
+add("open world and raids ignore lust while test mode is off", function()
+  SetGroup(true, false)
+  for _, difficultyID in ipairs({ 0, 16 }) do
+    SetInstanceDifficulty(difficultyID)
+    FireEvent("PLAYER_ENTERING_WORLD")
+    SetCombat(true)
+    CastSpell(2825)
+    ApplyAura(57724, 600)
+    SetCombat(false)
+    AdvanceTime(1201)
+    assert(SatedDB.lastLust == nil,
+      "tracked lust at difficulty " .. difficultyID)
+    assert(#SENT_MESSAGES == 0,
+      "announced lust at difficulty " .. difficultyID)
+    ClearAuras()
+  end
+  RunSlash("/sated")
+  assert(PRINTED[#PRINTED]:find("inactive outside Mythic%+"),
+    "status did not explain inactive scope")
+end)
+
+add("Mythic Keystone difficulty enables normal tracking", function()
+  SetInstanceDifficulty(8)
+  FireEvent("CHALLENGE_MODE_START")
+  ApplyAura(57724, 600)
+  assert(S.EnabledHere(), "Mythic+ scope not enabled")
+  assert(SatedDB.lastLust, "Mythic+ lust was ignored")
+end)
+
+add("/sated test enables tracking anywhere and persists until off", function()
+  SetGroup(true, false)
+  SetInstanceDifficulty(0)
+  FireEvent("PLAYER_ENTERING_WORLD")
+  ApplyAura(57724, 600)      -- ignored, but remains on the simulated bar
+  assert(SatedDB.lastLust == nil, "tracked before test mode")
+
+  RunSlash("/sated test")
+  assert(SatedDB.testMode == true, "test mode not persisted")
+  assert(S.EnabledHere(), "test mode did not override scope")
+  assert(SatedDB.lastLust, "existing Sated aura was not picked up")
+
+  SetCombat(true)
+  CastSpell(2825)
+  AdvanceTime(65)
+  SetCombat(false)
+  assert(#SENT_MESSAGES == 1
+    and SENT_MESSAGES[1].msg == "Lust was used 1 mins and 5 secs ago",
+    "test-mode combat summary missing")
+
+  RunSlash("/sated test off")
+  assert(SatedDB.testMode == nil, "test mode did not turn off")
+  assert(not S.EnabledHere(), "outside scope stayed enabled")
+  assert(SatedDB.lastLust == nil, "outside-scope window was not cleared")
+end)
+
+add("leaving Mythic+ clears timers and queued chat", function()
+  SetGroup(true, false)
+  SetInstanceDifficulty(8)
+  SetCombat(true)
+  CastSpell(2825)
+  assert(SatedDB.lastLust, "Mythic+ setup failed")
+
+  SetInstanceDifficulty(16)
+  FireEvent("PLAYER_ENTERING_WORLD")
+  SetCombat(false)
+  AdvanceTime(1201)
+  assert(SatedDB.lastLust == nil, "window survived leaving Mythic+")
+  assert(#SENT_MESSAGES == 0, "queued or timed chat leaked into raid")
+end)
+
+add("turning test mode off inside Mythic+ keeps the active window", function()
+  SetInstanceDifficulty(8)
+  CastSpell(2825)
+  local record = SatedDB.lastLust
+  RunSlash("/sated test")
+  RunSlash("/sated test off")
+  assert(SatedDB.testMode == nil, "test mode stayed enabled")
+  assert(SatedDB.lastLust == record, "active Mythic+ window was cleared")
 end)
 
 add("config tables carry the briefed IDs", function()
@@ -149,11 +231,11 @@ add("'Lust is up' party message fires exactly when the cooldown ends", function(
   SetGroup(true, false)
   ApplyAura(57724, 600)
   AdvanceTime(599)
-  assert(#SENT_MESSAGES == 1, "ready message fired early")
+  assert(#SENT_MESSAGES == 0, "ready message fired early")
   AdvanceTime(2)
-  assert(#SENT_MESSAGES == 2, "no ready message at 10:00")
-  assert(SENT_MESSAGES[2].msg == "Lust is up!",
-    "wrong text: " .. SENT_MESSAGES[2].msg)
+  assert(#SENT_MESSAGES == 1, "no ready message at 10:00")
+  assert(SENT_MESSAGES[1].msg == "Lust is up!",
+    "wrong text: " .. SENT_MESSAGES[1].msg)
   assert(#SCREEN_MESSAGES == 0 and #PLAYED_SOUNDS == 0,
     "ready beat must not create a local alert or sound")
 end)
@@ -164,28 +246,28 @@ add("custom marks fire after the debuff drops: up-for 10/20/30s", function()
   assert(SatedDB.marks and SatedDB.marks[1] == 10, "marks not persisted")
   ApplyAura(57724, 600)
   AdvanceTime(635)  -- past ready (600) and all three marks (610/620/630)
-  assert(#SENT_MESSAGES == 5,
-    "expected cast + ready + 3 marks, got " .. #SENT_MESSAGES)
-  assert(SENT_MESSAGES[3].msg == "Lust has been up for 0:10.",
-    "first mark wrong: " .. SENT_MESSAGES[3].msg)
-  assert(SENT_MESSAGES[5].msg == "Lust has been up for 0:30.",
-    "third mark wrong: " .. SENT_MESSAGES[5].msg)
+  assert(#SENT_MESSAGES == 4,
+    "expected ready + 3 marks, got " .. #SENT_MESSAGES)
+  assert(SENT_MESSAGES[2].msg == "Lust has been up for 0:10.",
+    "first mark wrong: " .. SENT_MESSAGES[2].msg)
+  assert(SENT_MESSAGES[4].msg == "Lust has been up for 0:30.",
+    "third mark wrong: " .. SENT_MESSAGES[4].msg)
 end)
 
 add("default marks: up at 10:00, up-for 3/5/10 min after that", function()
   SetGroup(true, false)
   ApplyAura(57724, 600)
   AdvanceTime(1201)  -- through ready + 3/5/10-min up-marks (T+20:01)
-  assert(#SENT_MESSAGES == 5,
-    "expected cast + ready + 3 marks, got " .. #SENT_MESSAGES)
-  assert(SENT_MESSAGES[2].msg == "Lust is up!",
-    "ready message wrong: " .. SENT_MESSAGES[2].msg)
-  assert(SENT_MESSAGES[3].msg == "Lust has been up for 3 min.",
-    "3-min message wrong: " .. SENT_MESSAGES[3].msg)
-  assert(SENT_MESSAGES[4].msg == "Lust has been up for 5 min.",
-    "5-min message wrong: " .. SENT_MESSAGES[4].msg)
-  assert(SENT_MESSAGES[5].msg == "Lust has been up for 10 min.",
-    "10-min message wrong: " .. SENT_MESSAGES[5].msg)
+  assert(#SENT_MESSAGES == 4,
+    "expected ready + 3 marks, got " .. #SENT_MESSAGES)
+  assert(SENT_MESSAGES[1].msg == "Lust is up!",
+    "ready message wrong: " .. SENT_MESSAGES[1].msg)
+  assert(SENT_MESSAGES[2].msg == "Lust has been up for 3 min.",
+    "3-min message wrong: " .. SENT_MESSAGES[2].msg)
+  assert(SENT_MESSAGES[3].msg == "Lust has been up for 5 min.",
+    "5-min message wrong: " .. SENT_MESSAGES[3].msg)
+  assert(SENT_MESSAGES[4].msg == "Lust has been up for 10 min.",
+    "10-min message wrong: " .. SENT_MESSAGES[4].msg)
 end)
 
 add("/reload mid-cooldown: ready + marks re-arm exactly once", function()
@@ -222,7 +304,7 @@ add("repeat PLAYER_ENTERING_WORLD (zone-in) never double-fires", function()
   FireEvent("PLAYER_ENTERING_WORLD")
   FireEvent("PLAYER_ENTERING_WORLD")
   AdvanceTime(700)
-  assert(#SENT_MESSAGES == 4,  -- cast + ready + both marks, once each
+  assert(#SENT_MESSAGES == 3,  -- ready + both marks, once each
     "double-fired: got " .. #SENT_MESSAGES .. " messages")
 end)
 
@@ -232,12 +314,12 @@ add("timer beats queue without local alerts during combat", function()
   ApplyAura(57724, 600)
   SetCombat(true)
   AdvanceTime(615)
-  assert(#SENT_MESSAGES == 1, "party message sent during combat")
+  assert(#SENT_MESSAGES == 0, "party message sent during combat")
   assert(#SCREEN_MESSAGES == 0 and #PLAYED_SOUNDS == 0,
     "combat beats must not create local alerts")
   SetCombat(false)
-  assert(#SENT_MESSAGES == 2
-    and SENT_MESSAGES[2].msg == "Lust has been up for 0:15.",
+  assert(#SENT_MESSAGES == 1
+    and SENT_MESSAGES[1].msg == "Lust has been up for 0:15.",
     "newest queued beat did not flush after combat")
 end)
 
@@ -248,7 +330,7 @@ add("/sated reset cancels pending messages and clears the window", function()
   RunSlash("/sated reset")
   assert(SatedDB.lastLust == nil, "window not cleared")
   AdvanceTime(700)
-  assert(#SENT_MESSAGES == 1, "cancelled messages still fired")
+  assert(#SENT_MESSAGES == 0, "cancelled messages still fired")
   RunSlash("/sated")
   assert(PRINTED[#PRINTED]:find("no lust recorded"), "status not reset")
 end)
@@ -260,10 +342,10 @@ add("changing marks mid-window re-arms against the same window", function()
   AdvanceTime(10)
   RunSlash("/sated marks 20 30")
   AdvanceTime(700)  -- 20s/30s marks + ready
-  assert(#SENT_MESSAGES == 4,
+  assert(#SENT_MESSAGES == 3,
     "re-armed messages wrong: " .. #SENT_MESSAGES)
   AdvanceTime(100)
-  assert(#SENT_MESSAGES == 4, "old 100s mark should be cancelled")
+  assert(#SENT_MESSAGES == 3, "old 100s mark should be cancelled")
 end)
 
 add("bad marks input rejected, marks unchanged", function()
@@ -274,51 +356,57 @@ end)
 
 -- Sprint 3 ------------------------------------------------------------
 
-add("own cast in a party, out of combat: one PARTY message", function()
+add("own cast in a party, out of combat: detection stays silent", function()
   SetGroup(true, false)
   CastSpell(2825)
-  assert(#SENT_MESSAGES == 1, "expected 1 message, got " .. #SENT_MESSAGES)
-  assert(SENT_MESSAGES[1].chatType == "PARTY", "wrong channel: " .. tostring(SENT_MESSAGES[1].chatType))
-  assert(SENT_MESSAGES[1].msg:find("^Lust used — back around %d+:%d+%.$"),
-    "bad message: " .. SENT_MESSAGES[1].msg)
+  assert(#SENT_MESSAGES == 0, "cast detection announced out of combat")
 end)
 
 add("instance groups still announce to PARTY, never INSTANCE_CHAT", function()
   SetGroup(false, true)
+  SetCombat(true)
   CastSpell(80353)
+  assert(#SENT_MESSAGES == 0, "cast announced during combat")
+  SetCombat(false)
   assert(#SENT_MESSAGES == 1 and SENT_MESSAGES[1].chatType == "PARTY",
     "expected PARTY announce, got " .. tostring(SENT_MESSAGES[1] and SENT_MESSAGES[1].chatType))
 end)
 
 add("partner's lust announces too by default (mode all)", function()
   SetGroup(true, false)
+  SetCombat(true)
   ApplyAura(57724, 600)  -- debuff only; we cast nothing
+  assert(#SENT_MESSAGES == 0, "partner lust announced during combat")
+  SetCombat(false)
   assert(#SENT_MESSAGES == 1, "partner lust not announced in mode all")
-  assert(SENT_MESSAGES[1].msg:find("^Lust used — back around"),
+  assert(SENT_MESSAGES[1].msg == "Lust was used 0 secs ago",
     "bad message: " .. SENT_MESSAGES[1].msg)
 end)
 
-add("/sated announce caster: partner silent, own cast speaks", function()
+add("/sated announce caster: partner silent, own combat cast summarizes", function()
   SetGroup(true, false)
   RunSlash("/sated announce caster")
   assert(SatedDB.announceMode == "caster", "mode not persisted")
+  SetCombat(true)
   ApplyAura(57724, 600)
-  AdvanceTime(601)  -- marks + ready pass too
+  SetCombat(false)
   assert(#SENT_MESSAGES == 0, "caster mode announced someone else's lust")
   RunSlash("/sated reset")
+  SetCombat(true)
   CastSpell(2825)
-  assert(#SENT_MESSAGES == 1, "caster mode silenced our own cast")
+  SetCombat(false)
+  assert(#SENT_MESSAGES == 1, "caster mode silenced our own summary")
 end)
 
-add("cast mid-combat: queued, flushed on regen with elapsed phrasing", function()
+add("cast mid-combat: silent until elapsed summary after regen", function()
   SetGroup(true, false)
   SetCombat(true)
   CastSpell(2825)
-  assert(#SENT_MESSAGES == 0, "announced during combat")
+  assert(#SENT_MESSAGES == 0, "cast announced during combat")
   AdvanceTime(130)
   SetCombat(false)  -- fires PLAYER_REGEN_ENABLED
   assert(#SENT_MESSAGES == 1, "queue did not flush on regen")
-  assert(SENT_MESSAGES[1].msg:find("was used 2:10 ago"),
+  assert(SENT_MESSAGES[1].msg == "Lust was used 2 mins and 10 secs ago",
     "elapsed phrasing wrong: " .. SENT_MESSAGES[1].msg)
 end)
 
@@ -326,10 +414,12 @@ add("cast during encounter: queued, flushed on ENCOUNTER_END", function()
   SetGroup(true, false)
   SetEncounter(true)
   CastSpell(2825)
-  assert(#SENT_MESSAGES == 0, "announced during encounter")
+  assert(#SENT_MESSAGES == 0, "cast announced during encounter")
   AdvanceTime(30)
   SetEncounter(false)
   assert(#SENT_MESSAGES == 1, "queue did not flush on encounter end")
+  assert(SENT_MESSAGES[1].msg == "Lust was used 30 secs ago",
+    "wrong encounter summary: " .. SENT_MESSAGES[1].msg)
 end)
 
 add("regen mid-encounter keeps the queue until encounter ends", function()
@@ -343,20 +433,31 @@ add("regen mid-encounter keeps the queue until encounter ends", function()
   assert(#SENT_MESSAGES == 1, "never flushed after encounter end")
 end)
 
+add("debuff then cast in combat flushes exactly once", function()
+  SetGroup(true, false)
+  SetCombat(true)
+  ApplyAura(57724, 600)
+  CastSpell(2825)
+  assert(#SENT_MESSAGES == 0, "cast announced during combat")
+  SetCombat(false)
+  assert(#SENT_MESSAGES == 1, "queued summary did not flush exactly once")
+end)
+
 add("cast event never announces twice (repeat cast + repeat regen)", function()
   SetGroup(true, false)
-  CastSpell(2825)
-  CastSpell(2825)
   SetCombat(true)
+  CastSpell(2825)
+  CastSpell(2825)
   SetCombat(false)
+  FireEvent("PLAYER_REGEN_ENABLED")
   assert(#SENT_MESSAGES == 1, "double announce: " .. #SENT_MESSAGES)
 end)
 
-add("debuff then cast event: still exactly one cast announce", function()
+add("debuff then cast event outside combat stays silent", function()
   SetGroup(true, false)
-  ApplyAura(57724, 600)      -- announces (mode all)
-  CastSpell(2825)            -- upgrades mine; must not re-announce
-  assert(#SENT_MESSAGES == 1, "expected 1 announce, got " .. #SENT_MESSAGES)
+  ApplyAura(57724, 600)
+  CastSpell(2825)            -- upgrades mine without announcing
+  assert(#SENT_MESSAGES == 0, "cast detection announced")
 end)
 
 add("never announces solo", function()
@@ -451,55 +552,66 @@ end)
 
 add("chat gets 'Lust is up!' then up-for 3/5/10 min", function()
   SetGroup(true, false)
-  CastSpell(2825)            -- SENT 1: cast announce
+  CastSpell(2825)            -- cast detection is silent
   AdvanceTime(601)           -- T+10:00 ready
-  assert(#SENT_MESSAGES == 2, "no ready message")
-  assert(SENT_MESSAGES[2].msg == "Lust is up!",
-    "ready message wrong: " .. SENT_MESSAGES[2].msg)
+  assert(#SENT_MESSAGES == 1, "no ready message")
+  assert(SENT_MESSAGES[1].msg == "Lust is up!",
+    "ready message wrong: " .. SENT_MESSAGES[1].msg)
   AdvanceTime(179)           -- T+13:00
-  assert(SENT_MESSAGES[3] and SENT_MESSAGES[3].msg == "Lust has been up for 3 min.",
-    "3-min message wrong: " .. tostring(SENT_MESSAGES[3] and SENT_MESSAGES[3].msg))
+  assert(SENT_MESSAGES[2] and SENT_MESSAGES[2].msg == "Lust has been up for 3 min.",
+    "3-min message wrong: " .. tostring(SENT_MESSAGES[2] and SENT_MESSAGES[2].msg))
   AdvanceTime(120)           -- T+15:00
-  assert(SENT_MESSAGES[4] and SENT_MESSAGES[4].msg == "Lust has been up for 5 min.",
+  assert(SENT_MESSAGES[3] and SENT_MESSAGES[3].msg == "Lust has been up for 5 min.",
     "5-min message wrong")
   AdvanceTime(300)           -- T+20:00
-  assert(SENT_MESSAGES[5] and SENT_MESSAGES[5].msg == "Lust has been up for 10 min.",
+  assert(SENT_MESSAGES[4] and SENT_MESSAGES[4].msg == "Lust has been up for 10 min.",
     "10-min message wrong")
-  assert(#SENT_MESSAGES == 5, "extra announces: " .. #SENT_MESSAGES)
+  assert(#SENT_MESSAGES == 4, "extra announces: " .. #SENT_MESSAGES)
 end)
 
 add("partner's lust gets the full chat pipeline in mode all", function()
   SetGroup(true, false)
   ApplyAura(57724, 600)
   AdvanceTime(1201)
-  assert(#SENT_MESSAGES == 5, "expected 5 messages, got " .. #SENT_MESSAGES)
-  assert(SENT_MESSAGES[2].msg == "Lust is up!", "second message not the ready beat")
-  assert(SENT_MESSAGES[5].msg == "Lust has been up for 10 min.",
+  assert(#SENT_MESSAGES == 4, "expected 4 messages, got " .. #SENT_MESSAGES)
+  assert(SENT_MESSAGES[1].msg == "Lust is up!", "first message not the ready beat")
+  assert(SENT_MESSAGES[4].msg == "Lust has been up for 10 min.",
     "last message not the 10-min up-mark")
 end)
 
 add("ready queued in combat re-phrases from the live clock", function()
   SetGroup(true, false)
-  CastSpell(2825)            -- SENT 1
+  CastSpell(2825)            -- silent outside combat
   SetCombat(true)
   AdvanceTime(600)           -- ready fires mid-combat → queued
   AdvanceTime(130)
   SetCombat(false)
-  assert(#SENT_MESSAGES == 2, "queue did not flush")
-  assert(SENT_MESSAGES[2].msg == "Lust has been up for 2:10.",
-    "not re-phrased live: " .. SENT_MESSAGES[2].msg)
+  assert(#SENT_MESSAGES == 1, "queue did not flush")
+  assert(SENT_MESSAGES[1].msg == "Lust has been up for 2:10.",
+    "not re-phrased live: " .. SENT_MESSAGES[1].msg)
 end)
 
 add("combat queue keeps only the newest beat (no message burst)", function()
   SetGroup(true, false)
-  CastSpell(2825)            -- SENT 1
+  CastSpell(2825)            -- silent outside combat
   SetCombat(true)
   AdvanceTime(790)           -- ready (600) and 3-min up-mark (780) both queue
   SetCombat(false)
-  assert(#SENT_MESSAGES == 2,
-    "expected one flushed message, got " .. (#SENT_MESSAGES - 1))
-  assert(SENT_MESSAGES[2].msg == "Lust has been up for 3:10.",
-    "wrong flushed message: " .. SENT_MESSAGES[2].msg)
+  assert(#SENT_MESSAGES == 1,
+    "expected one flushed message, got " .. #SENT_MESSAGES)
+  assert(SENT_MESSAGES[1].msg == "Lust has been up for 3:10.",
+    "wrong flushed message: " .. SENT_MESSAGES[1].msg)
+end)
+
+add("combat cast summary survives later ready milestones", function()
+  SetGroup(true, false)
+  SetCombat(true)
+  CastSpell(2825)
+  AdvanceTime(790)           -- ready and 3-min up-mark must not replace cast
+  SetCombat(false)
+  assert(#SENT_MESSAGES == 1, "expected one post-combat summary")
+  assert(SENT_MESSAGES[1].msg == "Lust was used 13 mins and 10 secs ago",
+    "cast summary was replaced: " .. SENT_MESSAGES[1].msg)
 end)
 
 add("/sated status flips to up-for phrasing after ready", function()
@@ -519,9 +631,9 @@ add("early debuff removal fires 'Lust is up' immediately", function()
   local a = ApplyAura(57724, 600)
   AdvanceTime(60)
   RemoveAura(a)   -- Proving Grounds reset wipes the debuff at 1:00
-  assert(#SENT_MESSAGES == 2, "no ready message on early removal")
-  assert(SENT_MESSAGES[2].msg == "Lust is up!",
-    "wrong message: " .. SENT_MESSAGES[2].msg)
+  assert(#SENT_MESSAGES == 1, "no ready message on early removal")
+  assert(SENT_MESSAGES[1].msg == "Lust is up!",
+    "wrong message: " .. SENT_MESSAGES[1].msg)
   RunSlash("/sated")
   assert(PRINTED[#PRINTED]:find("lust is UP"), "status not up: " .. PRINTED[#PRINTED])
 end)
@@ -533,24 +645,24 @@ add("marks re-anchor to the actual drop moment", function()
   AdvanceTime(60)
   RemoveAura(a)
   AdvanceTime(25)  -- marks land at drop+10 and drop+20
-  assert(#SENT_MESSAGES == 4,
-    "expected cast + ready + 2 marks, got " .. #SENT_MESSAGES)
-  assert(SENT_MESSAGES[3].msg == "Lust has been up for 0:10."
-    and SENT_MESSAGES[4].msg == "Lust has been up for 0:20.",
+  assert(#SENT_MESSAGES == 3,
+    "expected ready + 2 marks, got " .. #SENT_MESSAGES)
+  assert(SENT_MESSAGES[2].msg == "Lust has been up for 0:10."
+    and SENT_MESSAGES[3].msg == "Lust has been up for 0:20.",
     "marks not re-anchored to drop")
 end)
 
 add("chat announces the reset ready + re-anchored marks", function()
   SetGroup(true, false)
-  CastSpell(2825)          -- SENT 1
+  CastSpell(2825)          -- silent
   local a = ApplyAura(57724, 600)
   AdvanceTime(60)
   RemoveAura(a)
-  assert(#SENT_MESSAGES == 2 and SENT_MESSAGES[2].msg == "Lust is up!",
+  assert(#SENT_MESSAGES == 1 and SENT_MESSAGES[1].msg == "Lust is up!",
     "no ready chat on reset")
   AdvanceTime(180)         -- default 3-min mark, anchored to the drop
-  assert(#SENT_MESSAGES == 3 and SENT_MESSAGES[3].msg == "Lust has been up for 3 min.",
-    "3-min mark not re-anchored: " .. tostring(SENT_MESSAGES[3] and SENT_MESSAGES[3].msg))
+  assert(#SENT_MESSAGES == 2 and SENT_MESSAGES[2].msg == "Lust has been up for 3 min.",
+    "3-min mark not re-anchored: " .. tostring(SENT_MESSAGES[2] and SENT_MESSAGES[2].msg))
 end)
 
 add("natural expiry + removal event: ready fires exactly once", function()
@@ -558,10 +670,10 @@ add("natural expiry + removal event: ready fires exactly once", function()
   SetGroup(true, false)
   local a = ApplyAura(57724, 600)
   AdvanceTime(601)         -- clock path fires ready
-  assert(#SENT_MESSAGES == 2, "no natural ready")
+  assert(#SENT_MESSAGES == 1, "no natural ready")
   RemoveAura(a)            -- the removal event lands right after
   AdvanceTime(30)
-  assert(#SENT_MESSAGES == 2, "ready double-fired: " .. #SENT_MESSAGES)
+  assert(#SENT_MESSAGES == 1, "ready double-fired: " .. #SENT_MESSAGES)
 end)
 
 add("removal just before the clock: once, and clock timer cancelled", function()
@@ -570,9 +682,9 @@ add("removal just before the clock: once, and clock timer cancelled", function()
   local a = ApplyAura(57724, 600)
   AdvanceTime(599)
   RemoveAura(a)            -- server removed it a hair early
-  assert(#SENT_MESSAGES == 2, "no ready on removal")
+  assert(#SENT_MESSAGES == 1, "no ready on removal")
   AdvanceTime(10)          -- the old 600s timer must not fire again
-  assert(#SENT_MESSAGES == 2, "clock timer double-fired")
+  assert(#SENT_MESSAGES == 1, "clock timer double-fired")
 end)
 
 add("secret removal ids still detected via bar rescan", function()
@@ -581,7 +693,7 @@ add("secret removal ids still detected via bar rescan", function()
   local a = ApplyAura(57724, 600)
   AdvanceTime(60)
   RemoveAura(a, { secretId = true })
-  assert(#SENT_MESSAGES == 2 and SENT_MESSAGES[2].msg == "Lust is up!",
+  assert(#SENT_MESSAGES == 1 and SENT_MESSAGES[1].msg == "Lust is up!",
     "secret removal id broke reset detection")
 end)
 
@@ -592,9 +704,9 @@ add("unrelated debuff removal does not end the window", function()
   local moonfire = ApplyAura(8921, 12)
   AdvanceTime(30)
   RemoveAura(moonfire)
-  assert(#SENT_MESSAGES == 1, "unrelated removal ended the window")
+  assert(#SENT_MESSAGES == 0, "unrelated removal ended the window")
   AdvanceTime(575)         -- natural ready still at 600
-  assert(#SENT_MESSAGES == 2, "natural ready lost")
+  assert(#SENT_MESSAGES == 1, "natural ready lost")
 end)
 
 add("re-lust after a reset starts a fresh cycle", function()
@@ -608,11 +720,11 @@ add("re-lust after a reset starts a fresh cycle", function()
   ApplyAura(57724, 600)    -- lust pressed again in Proving Grounds
   assert(SatedDB.lastLust ~= resetRecord, "re-lust not detected")
   AdvanceTime(700)         -- new ready at +600, new mark at +630
-  assert(#SENT_MESSAGES == 5,
-    "expected two casts, reset-ready, new ready, and new mark; got "
+  assert(#SENT_MESSAGES == 3,
+    "expected reset-ready, new ready, and new mark; got "
     .. #SENT_MESSAGES)
-  assert(SENT_MESSAGES[4].msg == "Lust is up!"
-    and SENT_MESSAGES[5].msg == "Lust has been up for 0:30.",
+  assert(SENT_MESSAGES[2].msg == "Lust is up!"
+    and SENT_MESSAGES[3].msg == "Lust has been up for 0:30.",
     "fresh cycle beats wrong")
 end)
 
@@ -636,20 +748,20 @@ add("re-lust while up-for reminders are pending resets the cycle", function()
   ApplyAura(57724, 600)
   AdvanceTime(660)         -- natural ready fired at 600; the
                            -- 3/5/10-min reminders are pending
-  assert(#SENT_MESSAGES == 2, "setup wrong")
+  assert(#SENT_MESSAGES == 1, "setup wrong")
   local firstRecord = SatedDB.lastLust
   ApplyAura(57724, 600)    -- lust popped again at T+11:00
   assert(SatedDB.lastLust ~= firstRecord, "re-lust not detected")
   AdvanceTime(300)         -- old 3-min (T+13:00) and 5-min (T+15:00)
                            -- reminders would land in here — must not
-  assert(#SENT_MESSAGES == 3, "old reminders fired after re-lust: got "
+  assert(#SENT_MESSAGES == 1, "old reminders fired after re-lust: got "
     .. #SENT_MESSAGES)
   AdvanceTime(350)         -- past the new cycle's ready at 660+600 = T+21:00
-  assert(#SENT_MESSAGES == 4 and SENT_MESSAGES[4].msg == "Lust is up!",
+  assert(#SENT_MESSAGES == 2 and SENT_MESSAGES[2].msg == "Lust is up!",
     "new cycle ready missing")
   AdvanceTime(180)         -- new cycle's own 3-min reminder
-  assert(#SENT_MESSAGES == 5
-    and SENT_MESSAGES[5].msg == "Lust has been up for 3 min.",
+  assert(#SENT_MESSAGES == 3
+    and SENT_MESSAGES[3].msg == "Lust has been up for 3 min.",
     "new cycle reminders missing")
 end)
 

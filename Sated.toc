@@ -1,8 +1,8 @@
 ## Interface: 120100, 120005, 120007
 ## Title: Sated
-## Notes: Detects Bloodlust-family use, announces to party, and runs "lust back soon" timers.
+## Notes: Tracks Bloodlust-family use in Mythic+ and announces timers to party.
 ## Author: Jess, Fable, Baeleaf and Sol
-## Version: 1.1.0
+## Version: 1.2.0
 ## SavedVariables: SatedDB
 ## IconTexture: Interface\Icons\spell_nature_bloodlust
 

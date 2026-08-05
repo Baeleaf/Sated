@@ -1,5 +1,5 @@
--- Sated announce layer: sends timer beats to party chat — the cast,
--- "Lust is up!" at the cooldown end, and any up-time marks after that.
+-- Sated announce layer: sends timer beats to party chat — a post-combat
+-- cast summary, "Lust is up!" at cooldown end, and up-time marks after that.
 --
 -- Modes (/sated announce):
 --   all    (default) announce every detected lust window, whoever cast it
@@ -7,12 +7,11 @@
 --          Sated, so the group gets one message instead of five
 --   off    never chat
 --
--- Addon chat is locked during active encounters/M+ combat but permitted
--- before/after — announce immediately when clear, otherwise queue and flush
--- on PLAYER_REGEN_ENABLED / ENCOUNTER_END. The queue holds only the newest
--- pending event and is in-memory only: a reload or zone change drops it
--- silently (stale info by then). Flushed messages are re-phrased from the
--- clock at send time, never from when they were queued.
+-- Cast detection is always silent. Casts detected during combat or an active
+-- encounter queue one elapsed-time summary. Ready/mark beats also queue. The
+-- queue holds the newest pending event and flushes on PLAYER_REGEN_ENABLED /
+-- ENCOUNTER_END; a reload or zone change drops it silently. Flushed messages
+-- use the live clock.
 local _, Sated = ...
 
 local queue = nil            -- { record, key } — newest pending event only
@@ -39,24 +38,30 @@ end
 -- clock so queued messages never report stale numbers. UpFor() is anchored
 -- to the debuff actually leaving the bar, so artificial resets (Proving
 -- Grounds etc.) phrase correctly too.
-local function phrase(record, key)
+local function phrase()
   local up = Sated.UpFor()
-  if up ~= nil then
-    if up < 3 then return "Lust is up!" end
-    return string.format("Lust has been up for %s.", Sated.FmtDur(up))
+  if up == nil or up < 3 then return "Lust is up!" end
+  return string.format("Lust has been up for %s.", Sated.FmtDur(up))
+end
+
+local function queuedCastPhrase()
+  local elapsedSeconds = math.floor(math.max(0, Sated.Elapsed() or 0))
+  local elapsedMinutes = math.floor(elapsedSeconds / 60)
+  local remainingSeconds = elapsedSeconds % 60
+  if elapsedMinutes < 1 then
+    return string.format("Lust was used %d secs ago", remainingSeconds)
   end
-  local e = Sated.Elapsed() or 0
-  if key == "cast" and e < 3 then
-    return string.format("Lust used — back around %s.", Sated.BackTime(record))
-  end
-  return string.format("Lust was used %s ago — back around %s.",
-    Sated.FmtClock(e), Sated.BackTime(record))
+  return string.format(
+    "Lust was used %d mins and %d secs ago",
+    elapsedMinutes, remainingSeconds)
 end
 
 local function send(record, key)
   local chan = channel()
   if not chan then return end  -- group dissolved while queued; drop
-  SendChatMessage(phrase(record, key), chan)
+  local message = key == "cast" and queuedCastPhrase()
+    or phrase()
+  SendChatMessage(message, chan)
   record.announcedKeys = record.announcedKeys or {}
   record.announcedKeys[key] = true
   Sated.DebugLog("announce", key .. " → " .. chan)
@@ -65,21 +70,30 @@ end
 -- Route an announce event: dedup per (window, key), then send or queue.
 local function request(record, key)
   if not record then return end
+  if not Sated.EnabledHere() then return end
   local mode = announceMode()
   if mode == "off" then return end
   if mode == "caster" and not record.mine then return end
   if record.announcedKeys and record.announcedKeys[key] then return end
   if not IsInGroup() then return end
   if combatLocked() then
-    queue = { record = record, key = key }
-    Sated.DebugLog("queue", key .. " held for combat/encounter end")
-  else
+    local castSummaryPending = queue and queue.record == record
+      and queue.key == "cast" and key ~= "cast"
+    if not castSummaryPending then
+      queue = { record = record, key = key }
+      Sated.DebugLog("queue", key .. " held for combat/encounter end")
+    end
+  elseif key ~= "cast" then
     send(record, key)
   end
 end
 
 local function flush()
   if not queue then return end
+  if not Sated.EnabledHere() then
+    queue = nil
+    return
+  end
   if combatLocked() then return end  -- e.g. regen mid-encounter: keep waiting
   local record, key = queue.record, queue.key
   queue = nil
